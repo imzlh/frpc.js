@@ -33,10 +33,10 @@ Or with Node.js:
 npx --yes tsx main.ts ./example.config.ts
 ```
 
-Or with CNO from the sibling checkout:
+Or with CNO from the sibling checkout (recommended):
 
 ```bash
-../cno-cli/build/stage/cno main.ts ./example.config.ts
+cno main.ts ./example.config.ts
 ```
 
 ## Configuration

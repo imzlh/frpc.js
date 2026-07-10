@@ -18,7 +18,7 @@ interface ChildHandle {
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(scriptDir, "..");
 const frpsPath = resolve(rootDir, "frp/bin/frps");
-const cnoPath = resolve(rootDir, "../cno-cli/build/stage/cno");
+const cnoPath = resolve(rootDir, "cno");
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 

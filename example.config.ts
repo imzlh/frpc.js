@@ -2,7 +2,7 @@
 // Usage:
 //   deno run -A main.ts ./example.config.ts
 //   npx --yes tsx main.ts ./example.config.ts
-//   ../cno-cli/build/stage/cno main.ts ./example.config.ts
+//   cno main.ts ./example.config.ts
 
 import { TCP, HTTP, RawHTTP } from './src/types.ts';
 import type { IConfig, HttpResponseData } from './src/types.ts';

@@ -4,7 +4,7 @@
  * Usage:
  *   deno run -A main.ts ./my.config.ts
  *   npx tsx main.ts ./my.config.ts
- *   ../cno-cli/build/stage/cno main.ts ./my.config.ts
+ *   cno main.ts ./my.config.ts
  */
 
 import { isAbsolute, resolve } from 'node:path';
@@ -41,7 +41,7 @@ async function main(): Promise<void> {
     if (!configPath) {
         console.error('Usage: deno run -A main.ts <config.ts>');
         console.error('   or: npx tsx main.ts <config.ts>');
-        console.error('   or: ../cno-cli/build/stage/cno main.ts <config.ts>');
+        console.error('   or: cno main.ts <config.ts>');
         runtimeExit(1);
     }
 
