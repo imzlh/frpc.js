@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "lib": ["deno.ns", "deno.unstable", "esnext", "dom"],
+    "types": ["./deno-types.d.ts"],
+    "verbatimModuleSyntax": false
+  },
+  "tasks": {
+    "check": "deno check main.ts src/**/*.ts scripts/e2e_real_frps.ts",
+    "test": "deno test --allow-net src/",
+    "cno:test": "../cno-cli/build/stage/cno test src/",
+    "cno:cache": "../cno-cli/build/stage/cno cache main.ts",
+    "verify": "deno task check && deno task test && deno task cno:test && deno task cno:cache && deno task e2e",
+    "e2e": "deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_real_frps.ts",
+    "e2e:node": "deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_real_frps.ts --runtime=node"
+  },
+  "imports": {
+    "@std/assert": "jsr:@std/assert@1"
+  }
+}
