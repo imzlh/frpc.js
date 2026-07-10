@@ -49,6 +49,8 @@ export interface ConnectionConfig {
 }
 
 export interface TransportConfig {
+    /** frpc/frps control and work-connection message protocol. */
+    wireProtocol?: WireProtocol;
     poolCount?: number;
     heartbeatInterval?: number;
     heartbeatTimeout?: number;
@@ -63,6 +65,7 @@ export interface TransportTLSConfig {
 }
 
 export interface NormalizedConnectionConfig {
+    wireProtocol: WireProtocol;
     tls: boolean;
     tlsTrustedCaFile?: string;
     tlsServerName?: string;
@@ -75,6 +78,7 @@ export interface NormalizedConnectionConfig {
 
 export type AuthMethod = 'token' | 'oidc';
 export type AuthScope = 'HeartBeats' | 'NewWorkConns';
+export type WireProtocol = 'v1' | 'v2';
 
 export interface OIDCAuthConfig {
     clientID?: string;
@@ -833,7 +837,12 @@ export function serverEndpoint(cfg: Pick<IConfig, 'server' | 'serverAddr' | 'ser
 
 export function connectionOptions(cfg: Pick<IConfig, 'connection' | 'transport'>): NormalizedConnectionConfig {
     const poolMin = cfg.connection?.pool?.min ?? cfg.transport?.poolCount ?? 1;
+    const wireProtocol = cfg.transport?.wireProtocol ?? 'v1';
+    if (wireProtocol !== 'v1' && wireProtocol !== 'v2') {
+        throw new Error(`Unsupported transport.wireProtocol: ${wireProtocol}`);
+    }
     return {
+        wireProtocol,
         tls: cfg.connection?.tls ?? cfg.transport?.tls?.enable ?? false,
         tlsTrustedCaFile: cfg.connection?.tlsTrustedCaFile ?? cfg.transport?.tls?.trustedCaFile,
         tlsServerName: cfg.connection?.tlsServerName ?? cfg.transport?.tls?.serverName,

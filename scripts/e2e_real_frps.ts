@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 type RuntimeName = "deno" | "cno" | "node";
 type ScenarioName = "plain" | "tls";
+type WireProtocol = "v1" | "v2";
 
 interface ChildHandle {
   child: Deno.ChildProcess;
@@ -39,6 +40,13 @@ function scenarioFilter(): ScenarioName[] {
   if (value === "tls") return ["tls"];
   if (value === "both") return ["plain", "tls"];
   throw new Error(`Unsupported scenario filter: ${value}`);
+}
+
+function wireProtocolFilter(): WireProtocol {
+  const arg = Deno.args.find((value) => value.startsWith("--wire="));
+  const value = arg?.slice("--wire=".length) ?? "v1";
+  if (value === "v1" || value === "v2") return value;
+  throw new Error(`Unsupported wire protocol: ${value}`);
 }
 
 async function readInto(
@@ -1321,6 +1329,7 @@ async function runRuntime(
 async function runScenario(
   scenario: ScenarioName,
   runtimes: RuntimeName[],
+  wireProtocol: WireProtocol,
 ): Promise<void> {
   const usedTcpPorts = new Set<number>();
   const usedUdpPorts = new Set<number>();
@@ -1420,6 +1429,7 @@ export default {
         heartbeat: 2,
         heartbeatTimeout: 8,
     },
+    transport: { wireProtocol: '${wireProtocol}' },
     webui: { enabled: false },
     proxies: {
         tcp_echo: new TCP(
@@ -1796,6 +1806,7 @@ export default {
 async function main(): Promise<void> {
   const runtimes = runtimeFilter();
   const scenarios = scenarioFilter();
+  const wireProtocol = wireProtocolFilter();
   const stat = await Deno.stat(frpsPath).catch(() => null);
   if (!stat?.isFile) throw new Error(`frps binary not found: ${frpsPath}`);
   if (runtimes.includes("cno")) {
@@ -1805,7 +1816,7 @@ async function main(): Promise<void> {
 
   for (const scenario of scenarios) {
     for (const runtime of runtimes) {
-      await runScenario(scenario, [runtime]);
+      await runScenario(scenario, [runtime], wireProtocol);
     }
   }
 }

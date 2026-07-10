@@ -96,6 +96,7 @@ Deno.test('connectionOptions — maps Go-style transport fields', () => {
             },
         },
     }), {
+        wireProtocol: 'v1',
         tls: true,
         tlsTrustedCaFile: '/ca.pem',
         tlsServerName: 'frps.example.com',
@@ -131,6 +132,7 @@ Deno.test('connectionOptions — connection config overrides transport aliases',
             },
         },
     }), {
+        wireProtocol: 'v1',
         tls: false,
         tlsTrustedCaFile: '/connection-ca.pem',
         tlsServerName: 'connection.example.com',

@@ -1,13 +1,12 @@
 # frpc-ts - frp client for Deno/Node-compatible runtimes
 
 TypeScript rewrite of [frp](https://github.com/fatedier/frp) client, compatible
-with the frp V1 JSON message protocol.
+with the frp V1 and V2 Wire message protocols.
 
 ## Features
 
 - **Proxy types**: TCP, TCPMux HTTP CONNECT, HTTP, HTTPS, UDP, RawHTTP
-- **Protocol**: V1 JSON messages framed as `[type][int64 length][json]`
-  (compatible with frps)
+- **Protocol**: V1 JSON messages and V2 Wire frames with AES-256-GCM control-channel encryption
 - **Auth**: token auth plus OIDC client credentials/token source auth
 - **TLS**: Control and work connections over TLS
 - **Pool**: Configurable work connection pool (min/max)
@@ -60,6 +59,7 @@ export default {
   start: ["ssh", "web"],
   logLevel: "info",
   transport: {
+    wireProtocol: "v2",
     poolCount: 1,
     heartbeatInterval: 30,
     heartbeatTimeout: 90,
@@ -105,7 +105,7 @@ main.ts → FrpClient → ControlChannel → [Login, ProxyRegister, Heartbeat]
 
 | Layer    | Module          | Description                          |
 | -------- | --------------- | ------------------------------------ |
-| Protocol | `src/protocol/` | V1 codec, message types, token auth  |
+| Protocol | `src/protocol/` | V1/V2 codecs, AEAD control crypto, message types, token auth  |
 | Control  | `src/control/`  | Login, registration, heartbeat, pool |
 | Handler  | `src/handler/`  | TCP/HTTP/UDP proxy handlers          |
 | Network  | `src/net/`      | TCP/TLS connect, ProxyProtocol       |
@@ -159,8 +159,14 @@ deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_rea
 deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_real_frps.ts --scenario=tls --runtime=cno
 ```
 
+Pass `--wire=v2` to validate the V2 Wire path. The default remains `v1` for
+compatibility with older servers:
+
+```bash
+deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_real_frps.ts --scenario=plain --runtime=deno --wire=v2
+```
+
 ## Not Implemented (vs Go frp)
 
-- V2 Wire protocol (AEAD encryption)
 - yamux multiplexing, WebSocket/QUIC transport
 - STCP/XTCP (P2P visitor mode)

@@ -1,8 +1,9 @@
-// src/protocol/codec.ts — Wire framing: readMsg / writeMsg
-// frp V1 JSON protocol: [typeByte][int64 big-endian json length][json]
+// src/protocol/codec.ts — V1/V2 message framing: readMsg / writeMsg
 
 import { Buffer } from 'node:buffer';
 import type { NetSocket } from '../types.ts';
+import type { WireProtocol } from '../types.ts';
+import { decodeV2Message, encodeV2Message, WireFrameBuffer } from './wire.ts';
 
 export interface MessageSocket {
     write(data: Uint8Array | Buffer, cb?: (err?: Error | null) => void): unknown;
@@ -21,33 +22,47 @@ export interface MessageSocket {
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-const HEADER_LEN = 9;
-const MAX_MSG_LENGTH = 10_240;
+const V1_HEADER_LEN = 9;
+const MAX_V1_MSG_LENGTH = 10_240;
 
 export class MessageBuffer {
     private buf = Buffer.alloc(0);
+    private readonly v2Frames?: WireFrameBuffer;
+
+    constructor(private wireProtocol: WireProtocol = 'v1') {
+        if (wireProtocol === 'v2') this.v2Frames = new WireFrameBuffer();
+    }
 
     feed(data: Buffer): void {
+        if (this.v2Frames) {
+            this.v2Frames.feed(data);
+            return;
+        }
         this.buf = Buffer.concat([this.buf, data]);
     }
 
     tryReadMsg(): { type: number; msg: unknown } | null {
-        if (this.buf.length < HEADER_LEN) return null;
+        if (this.v2Frames) {
+            const frame = this.v2Frames.tryReadFrame();
+            return frame ? decodeV2Message(frame) : null;
+        }
+        if (this.buf.length < V1_HEADER_LEN) return null;
 
         const type = this.buf[0]!;
         const length = readInt64BE(this.buf, 1);
         if (length < 0) throw new Error(`Invalid message length: ${length}`);
-        if (length > MAX_MSG_LENGTH) throw new Error(`Message length exceeds limit: ${length}`);
-        if (this.buf.length < HEADER_LEN + length) return null;
+        if (length > MAX_V1_MSG_LENGTH) throw new Error(`Message length exceeds limit: ${length}`);
+        if (this.buf.length < V1_HEADER_LEN + length) return null;
 
-        const json = this.buf.subarray(HEADER_LEN, HEADER_LEN + length);
-        this.buf = this.buf.subarray(HEADER_LEN + length);
+        const json = this.buf.subarray(V1_HEADER_LEN, V1_HEADER_LEN + length);
+        this.buf = this.buf.subarray(V1_HEADER_LEN + length);
         return { type, msg: json.length === 0 ? {} : JSON.parse(dec.decode(json)) };
     }
 
-    get length(): number { return this.buf.length; }
+    get length(): number { return this.v2Frames?.length ?? this.buf.length; }
 
     drain(): Buffer {
+        if (this.v2Frames) return this.v2Frames.drain();
         const out = this.buf;
         this.buf = Buffer.alloc(0);
         return out;
@@ -59,7 +74,9 @@ export class MessageReader {
     private pending: Array<{ resolve: (v: { type: number; msg: unknown }) => void; reject: (e: Error) => void }> = [];
     private installed = false;
 
-    constructor(private socket: MessageSocket) {}
+    constructor(private socket: MessageSocket, wireProtocol: WireProtocol = 'v1') {
+        this.mb = new MessageBuffer(wireProtocol);
+    }
 
     readMsg(): Promise<{ type: number; msg: unknown }> {
         return new Promise((resolve, reject) => {
@@ -142,14 +159,14 @@ export class MessageReader {
     }
 }
 
-export function readMsg(socket: MessageSocket): Promise<{ type: number; msg: unknown }> {
-    const reader = new MessageReader(socket);
+export function readMsg(socket: MessageSocket, wireProtocol: WireProtocol = 'v1'): Promise<{ type: number; msg: unknown }> {
+    const reader = new MessageReader(socket, wireProtocol);
     return reader.readMsg().finally(() => reader.close());
 }
 
-export function readMsgWithTail(socket: MessageSocket): Promise<{ type: number; msg: unknown; tail: Buffer }> {
+export function readMsgWithTail(socket: MessageSocket, wireProtocol: WireProtocol = 'v1'): Promise<{ type: number; msg: unknown; tail: Buffer }> {
     return new Promise((resolve, reject) => {
-        const mb = new MessageBuffer();
+        const mb = new MessageBuffer(wireProtocol);
         const cleanup = () => {
             socket.off('data', onData);
             socket.off('end', onEnd);
@@ -183,13 +200,18 @@ export function readMsgWithTail(socket: MessageSocket): Promise<{ type: number; 
     });
 }
 
-export function writeMsg(socket: MessageSocket, type: number, msg: unknown): Promise<void> {
+export function writeMsg(socket: MessageSocket, type: number, msg: unknown, wireProtocol: WireProtocol = 'v1'): Promise<void> {
     return new Promise((resolve, reject) => {
+        if (wireProtocol === 'v2') {
+            const frame = encodeV2Message(type, msg);
+            socket.write(frame, (err) => err ? reject(err) : resolve());
+            return;
+        }
         const json = enc.encode(JSON.stringify(msg));
-        const frame = Buffer.alloc(HEADER_LEN + json.length);
+        const frame = Buffer.alloc(V1_HEADER_LEN + json.length);
         frame[0] = type;
         writeInt64BE(frame, json.length, 1);
-        frame.set(json, HEADER_LEN);
+        frame.set(json, V1_HEADER_LEN);
         socket.write(frame, (err) => {
             if (err) reject(err);
             else resolve();

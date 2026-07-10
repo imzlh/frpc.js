@@ -1,8 +1,8 @@
 // src/control/pool.ts — Work connection pool
 
-import { MsgType, readMsgWithTail, writeMsg, createEncryptedConn, createCompressedConn, createRateLimitedConn } from '../protocol/index.ts';
+import { MsgType, readMsgWithTail, writeMsg, writeV2Magic, createEncryptedConn, createCompressedConn, createRateLimitedConn } from '../protocol/index.ts';
 import { connectTo } from '../net/index.ts';
-import { TCP, HTTP, RawHTTP, STCP, TCPMux, UDP, bandwidthLimitBytes, proxyOptions, type Hooks, type NetAddr, type NormalizedProxyOptions, type ProxyBase, type NetSocket, type ProxyCommonOptions } from '../types.ts';
+import { TCP, HTTP, RawHTTP, STCP, TCPMux, UDP, bandwidthLimitBytes, proxyOptions, type Hooks, type NetAddr, type NormalizedProxyOptions, type ProxyBase, type NetSocket, type ProxyCommonOptions, type WireProtocol } from '../types.ts';
 import { handleTcp, handleHttp, handleRawHttp, handleUdp } from '../handler/index.ts';
 import type { ClientAuth } from '../auth.ts';
 import type { StartWorkConnMsg } from '../protocol/index.ts';
@@ -16,6 +16,7 @@ export interface PoolConfig {
     proxies: Map<string, ProxyBase>;
     min: number;
     max: number;
+    wireProtocol?: WireProtocol;
     hooks?: Hooks;
 }
 
@@ -67,22 +68,25 @@ export class WorkConnPool {
     }
 
     async #connect(): Promise<NetSocket> {
-        return connectTo(this.cfg.serverAddr, this.cfg.useTls, this.cfg.tlsOpts);
+        const conn = await connectTo(this.cfg.serverAddr, this.cfg.useTls, this.cfg.tlsOpts);
+        if ((this.cfg.wireProtocol ?? 'v1') === 'v2') await writeV2Magic(conn);
+        return conn;
     }
 
     async #worker(): Promise<void> {
         const conn = await this.#connect();
+        const wireProtocol = this.cfg.wireProtocol ?? 'v1';
         this.conns.add(conn);
         let isIdle = false;
         try {
-            await writeMsg(conn, MsgType.NewWorkConn, await this.cfg.auth.newWorkConn(this.cfg.runId));
+            await writeMsg(conn, MsgType.NewWorkConn, await this.cfg.auth.newWorkConn(this.cfg.runId), wireProtocol);
 
             this.idle++;
             isIdle = true;
             let swc: StartWorkConnMsg;
             let initialData = new Uint8Array();
             try {
-                const { type, msg, tail } = await readMsgWithTail(conn);
+                const { type, msg, tail } = await readMsgWithTail(conn, wireProtocol);
                 this.idle--;
                 isIdle = false;
                 if (type !== MsgType.StartWorkConn) return;
@@ -136,7 +140,7 @@ export class WorkConnPool {
             } else if (proxy instanceof RawHTTP) {
                 await handleRawHttp(workConn, swc, proxy.handler, workInitialData, wire?.proxyProtocolVersion);
             } else if (proxy instanceof UDP) {
-                await handleUdp(workConn, swc, proxy.handler, wire?.proxyProtocolVersion);
+                await handleUdp(workConn, swc, proxy.handler, wire?.proxyProtocolVersion, this.cfg.wireProtocol ?? 'v1');
             }
         } finally {
             if (this.cfg.hooks?.onDisconnect) {

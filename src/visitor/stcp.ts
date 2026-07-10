@@ -1,9 +1,9 @@
 // src/visitor/stcp.ts — STCP visitor runtime
 
 import { createServer, type Server, type Socket } from 'node:net';
-import { MsgType, MessageReader, createCompressedConn, createEncryptedConn, genPrivKey, pipeConn, writeMsg } from '../protocol/index.ts';
+import { MsgType, MessageReader, createCompressedConn, createEncryptedConn, genPrivKey, pipeConn, writeMsg, writeV2Magic } from '../protocol/index.ts';
 import { connectTo } from '../net/index.ts';
-import { targetServerProxyName, type NetSocket, type STCPVisitor, type VisitorCommonOptions } from '../types.ts';
+import { targetServerProxyName, type NetSocket, type STCPVisitor, type VisitorCommonOptions, type WireProtocol } from '../types.ts';
 import type { NewVisitorConnRespMsg } from '../protocol/index.ts';
 
 export interface VisitorRuntimeConfig {
@@ -12,6 +12,7 @@ export interface VisitorRuntimeConfig {
     tlsOpts?: { ca?: string; servername?: string; rejectUnauthorized?: boolean };
     runId: string;
     user?: string;
+    wireProtocol?: WireProtocol;
 }
 
 export class STCPVisitorRuntime {
@@ -72,6 +73,8 @@ export class STCPVisitorRuntime {
     async #dialVisitorConn(opts: VisitorCommonOptions): Promise<NetSocket> {
         const raw = await connectTo(this.cfg.serverAddr, this.cfg.useTls, this.cfg.tlsOpts);
         try {
+            const wireProtocol = this.cfg.wireProtocol ?? 'v1';
+            if (wireProtocol === 'v2') await writeV2Magic(raw);
             const timestamp = Math.floor(Date.now() / 1000);
             await writeMsg(raw, MsgType.NewVisitorConn, {
                 run_id: this.cfg.runId,
@@ -80,9 +83,9 @@ export class STCPVisitorRuntime {
                 timestamp,
                 use_encryption: opts.transport?.useEncryption ?? false,
                 use_compression: opts.transport?.useCompression ?? false,
-            });
+            }, wireProtocol);
 
-            const reader = new MessageReader(raw);
+            const reader = new MessageReader(raw, wireProtocol);
             const { type, msg } = await reader.readMsg().finally(() => reader.close());
             if (type !== MsgType.NewVisitorConnResp) {
                 throw new Error(`Expected NewVisitorConnResp, got 0x${type.toString(16)}`);

@@ -3,3 +3,4 @@ deno.lock
 config.ts
 .codeartsdoer
 types/
+frp/

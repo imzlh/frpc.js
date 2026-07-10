@@ -14,6 +14,20 @@ export async function createCryptoConn(socket: MessageSocket, token: string): Pr
     return new CryptoConn(socket, key);
 }
 
+/** V2 control-channel AEAD stream. The framing matches golib/crypto.AEADStream*. */
+export async function createAeadCryptoConn(
+    socket: MessageSocket,
+    token: string,
+    transcriptHash: Uint8Array,
+    role: 'client' | 'server' = 'client',
+): Promise<AeadCryptoConn> {
+    const [readKey, writeKey] = await Promise.all([
+        deriveV2ControlKey(token, transcriptHash, role === 'client' ? 'server-to-client' : 'client-to-server'),
+        deriveV2ControlKey(token, transcriptHash, role === 'client' ? 'client-to-server' : 'server-to-client'),
+    ]);
+    return new AeadCryptoConn(socket, readKey, writeKey);
+}
+
 export async function createEncryptedConn(
     socket: MessageSocket,
     token: string,
@@ -43,6 +57,155 @@ export async function deriveFrpCryptoKey(token: string): Promise<CryptoKey> {
         false,
         ['encrypt'],
     );
+}
+
+async function deriveV2ControlKey(
+    token: string,
+    transcriptHash: Uint8Array,
+    direction: 'client-to-server' | 'server-to-client',
+): Promise<CryptoKey> {
+    const material = await crypto.subtle.importKey(
+        'raw', textEncoder.encode(token), 'HKDF', false, ['deriveBits'],
+    );
+    const info = textEncoder.encode(`frp wire v2 control aead aes-256-gcm ${direction}`);
+    const bits = await crypto.subtle.deriveBits({
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: cryptoBytes(transcriptHash),
+        info,
+    }, material, 256);
+    return crypto.subtle.importKey('raw', bits, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+export class AeadCryptoConn extends EventEmitter implements MessageSocket {
+    private readBuffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    private readStreamNonce: Uint8Array<ArrayBuffer> | undefined;
+    private readNonce: Uint8Array<ArrayBuffer> | undefined;
+    private writeStreamNonce: Uint8Array<ArrayBuffer> | undefined;
+    private writeNonce: Uint8Array<ArrayBuffer> | undefined;
+    private writeHeaderSent = false;
+    private writeChain = Promise.resolve();
+    private readChain = Promise.resolve();
+
+    constructor(
+        private socket: MessageSocket,
+        private readKey: CryptoKey,
+        private writeKey: CryptoKey,
+    ) {
+        super();
+        socket.on('data', (data) => this.#queueData(data));
+        socket.on('end', () => this.emit('end'));
+        socket.on('close', () => this.emit('close'));
+        socket.on('error', (err) => this.emit('error', err));
+        socket.resume?.();
+    }
+
+    write(data: Uint8Array | Buffer, cb?: (err?: Error | null) => void): boolean {
+        const bytes = Buffer.from(data);
+        this.writeChain = this.writeChain.then(() => this.#write(bytes));
+        this.writeChain.then(() => cb?.()).catch((err) => cb?.(err as Error));
+        return true;
+    }
+
+    destroy(error?: Error): void {
+        this.socket.destroy(error);
+    }
+
+    #queueData(data: Buffer): void {
+        this.readChain = this.readChain.then(() => this.#handleData(data)).catch((err) => {
+            this.emit('error', err);
+            this.destroy(err as Error);
+        });
+    }
+
+    async #write(data: Buffer): Promise<void> {
+        for (let offset = 0; offset < data.length; offset += 64 * 1024) {
+            await this.#writeFrame(data.subarray(offset, offset + 64 * 1024));
+        }
+    }
+
+    async #writeFrame(plain: Buffer): Promise<void> {
+        if (!this.writeNonce) {
+            this.writeNonce = new Uint8Array(12);
+            crypto.getRandomValues(this.writeNonce);
+            this.writeStreamNonce = cryptoBytes(this.writeNonce);
+        }
+        const header = Buffer.alloc(4);
+        header.writeUInt32BE(plain.length + 16, 0);
+        const aad = concatCryptoBytes(this.writeStreamNonce!, header);
+        const encrypted = Buffer.from(await crypto.subtle.encrypt({
+            name: 'AES-GCM',
+            iv: this.writeNonce,
+            additionalData: aad,
+            tagLength: 128,
+        }, this.writeKey, cryptoBytes(plain)));
+        const firstFrame = !this.writeHeaderSent;
+        const prefix = firstFrame ? Buffer.from(this.writeStreamNonce!) : Buffer.alloc(0);
+        incrementNonce(this.writeNonce);
+        this.writeHeaderSent = true;
+        await writeToSocket(this.socket, firstFrame ? Buffer.concat([prefix, header, encrypted]) : Buffer.concat([header, encrypted]));
+    }
+
+    async #handleData(data: Buffer): Promise<void> {
+        this.readBuffer = this.readBuffer.length === 0 ? data : Buffer.concat([this.readBuffer, data]);
+        for (;;) {
+            if (!this.readNonce) {
+                if (this.readBuffer.length < 12) return;
+                this.readNonce = cryptoBytes(this.readBuffer.subarray(0, 12));
+                this.readStreamNonce = cryptoBytes(this.readNonce);
+                this.readBuffer = this.readBuffer.subarray(12);
+            }
+            if (this.readBuffer.length < 4) return;
+            const length = this.readBuffer.readUInt32BE(0);
+            if (length < 16 || length > 64 * 1024 + 16) {
+                throw new Error(`Invalid V2 AEAD ciphertext length: ${length}`);
+            }
+            if (this.readBuffer.length < 4 + length) return;
+            const header = this.readBuffer.subarray(0, 4);
+            const ciphertext = this.readBuffer.subarray(4, 4 + length);
+            this.readBuffer = this.readBuffer.subarray(4 + length);
+            const aad = concatCryptoBytes(this.readStreamNonce!, header);
+            const plain = Buffer.from(await crypto.subtle.decrypt({
+                name: 'AES-GCM',
+                iv: this.readNonce,
+                additionalData: aad,
+                tagLength: 128,
+            }, this.readKey, cryptoBytes(ciphertext)));
+            incrementNonce(this.readNonce);
+            if (plain.length > 0) this.emit('data', plain);
+        }
+    }
+}
+
+function incrementNonce(nonce: Uint8Array): void {
+    for (let i = nonce.length - 1; i >= 0; i--) {
+        nonce[i] = (nonce[i]! + 1) & 0xff;
+        if (nonce[i] !== 0) return;
+    }
+    throw new Error('V2 AEAD nonce exhausted');
+}
+
+function cryptoBytes(data: Uint8Array): Uint8Array<ArrayBuffer> {
+    const out = new Uint8Array(data.length);
+    out.set(data);
+    return out;
+}
+
+function concatCryptoBytes(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
+    const length = parts.reduce((total, part) => total + part.length, 0);
+    const out = new Uint8Array(length);
+    let offset = 0;
+    for (const part of parts) {
+        out.set(part, offset);
+        offset += part.length;
+    }
+    return out;
+}
+
+function writeToSocket(socket: MessageSocket, data: Buffer): Promise<void> {
+    return new Promise((resolve, reject) => {
+        socket.write(data, (err) => err ? reject(err) : resolve());
+    });
 }
 
 export class CryptoConn extends EventEmitter implements MessageSocket {

@@ -15,6 +15,7 @@ import type {
 } from '../types.ts';
 import { targetProxyProtocolVersion } from '../types.ts';
 import { MsgType, MessageReader, writeMsg } from '../protocol/index.ts';
+import type { WireProtocol } from '../types.ts';
 import { buildProxyProtocolHeader } from './pp2.ts';
 
 function toNetAddr(addr: UdpWireAddr | null | undefined): NetAddr {
@@ -46,11 +47,12 @@ export async function handleUdp(
     _swc: StartWorkConnMsg,
     handler: UdpHandler,
     proxyProtocolVersion?: ProxyProtocolVersion,
+    wireProtocol: WireProtocol = 'v1',
 ): Promise<void> {
-    const reader = new MessageReader(conn);
+    const reader = new MessageReader(conn, wireProtocol);
     let writeChain = Promise.resolve();
     const send = (type: number, msg: unknown) => {
-        writeChain = writeChain.then(() => writeMsg(conn, type, msg));
+        writeChain = writeChain.then(() => writeMsg(conn, type, msg, wireProtocol));
         return writeChain;
     };
     const heartbeat = setInterval(() => {
