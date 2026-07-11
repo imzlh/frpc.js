@@ -3,7 +3,7 @@
 import { assertEquals, assertRejects } from '@std/assert';
 import { MessageBuffer, MessageReader, pipeConn, readMsg, readMsgWithTail, writeMsg } from './codec.ts';
 import { MsgType } from './message.ts';
-import { Socket, createServer, connect } from 'node:net';
+import { type Socket, createServer, connect } from 'node:net';
 import { Buffer } from 'node:buffer';
 import type { Server } from 'node:net';
 import { EventEmitter } from 'node:events';

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "designSystem": {
+    "slug": "github",
+    "path": "design-systems/github"
+  },
+  "skill": {
+    "slug": "dashboard",
+    "path": "design-templates/dashboard",
+    "kind": "design-template",
+    "mode": "prototype"
+  },
+  "boundAt": "2026-07-11T00:00:00Z"
+}

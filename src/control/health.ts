@@ -1,7 +1,8 @@
 // src/control/health.ts — Local backend health checks
 
 import { connect } from 'node:net';
-import { TCP, RawHTTP, STCP, TCPMux, UDP, healthCheckHeaders, type ForwardTarget, type HealthCheckOptions, type ProxyBase } from '../types.ts';
+import { type ForwardTarget, healthCheckHeaders, type HealthCheckOptions, type ProxyBase, RawHTTP, STCP, TCP, TCPMux, UDP } from '../types.ts';
+import { defaultLogger, formatError, type Logger } from '../log.ts';
 
 export interface HealthTarget {
     target: ForwardTarget;
@@ -35,6 +36,7 @@ export class HealthMonitor {
     private stopped = false;
     private healthy = false;
     private failed = 0;
+    private unavailableLogged = false;
     private timer: ReturnType<typeof setTimeout> | undefined;
 
     constructor(
@@ -42,6 +44,7 @@ export class HealthMonitor {
         private opts: HealthCheckOptions,
         private onHealthy: () => void | Promise<void>,
         private onUnhealthy: () => void | Promise<void>,
+        private log: Logger = defaultLogger,
     ) {}
 
     start(): void {
@@ -56,20 +59,34 @@ export class HealthMonitor {
     async #tick(): Promise<void> {
         if (this.stopped) return;
         try {
-            const ok = await this.#check().then(() => true).catch(() => false);
+            let checkError: unknown;
+            const ok = await this.#check().then(() => true).catch((error) => {
+                checkError = error;
+                return false;
+            });
             if (this.stopped) return;
             if (ok) {
                 this.failed = 0;
+                this.unavailableLogged = false;
                 if (!this.healthy) {
                     await Promise.resolve(this.onHealthy());
                     this.healthy = true;
                 }
             } else if (this.healthy) {
                 this.failed++;
+                this.log.debug(
+                    `Backend check failed (${this.failed}/${this.opts.maxFailed ?? 1}): ${formatError(checkError)}`,
+                );
                 if (this.failed >= (this.opts.maxFailed ?? 1)) {
                     await Promise.resolve(this.onUnhealthy());
                     this.healthy = false;
+                    this.unavailableLogged = true;
                 }
+            } else if (!this.unavailableLogged) {
+                this.log.debug(
+                    `Backend unavailable: ${formatTarget(this.target)}: ${formatError(checkError)}`,
+                );
+                this.unavailableLogged = true;
             }
         } finally {
             this.#schedule((this.opts.intervalSeconds ?? 10) * 1_000);
@@ -79,7 +96,11 @@ export class HealthMonitor {
     #schedule(ms: number): void {
         if (this.stopped) return;
         this.timer = setTimeout(() => {
-            void this.#tick().catch(() => {});
+            void this.#tick().catch((error) => {
+                if (!this.stopped) {
+                    this.log.warn(`Health state update failed: ${formatError(error)}`);
+                }
+            });
         }, ms);
     }
 
@@ -90,14 +111,22 @@ export class HealthMonitor {
     #tcpCheck(): Promise<void> {
         const timeout = (this.opts.timeoutSeconds ?? 3) * 1_000;
         return new Promise((resolve, reject) => {
-            const socket = connect({ host: this.target.host, port: this.target.port });
+            const socket = this.target.type === 'unix'
+                ? connect({ path: this.target.path })
+                : connect({
+                    host: this.target.host,
+                    port: this.target.port,
+                });
             const done = (err?: Error) => {
                 clearTimeout(timer);
                 socket.removeAllListeners();
                 socket.destroy();
                 err ? reject(err) : resolve();
             };
-            const timer = setTimeout(() => done(new Error('health check timeout')), timeout);
+            const timer = setTimeout(
+                () => done(new Error('health check timeout')),
+                timeout,
+            );
             socket.once('connect', () => done());
             socket.once('error', done);
         });
@@ -109,7 +138,9 @@ export class HealthMonitor {
         const timer = setTimeout(() => controller.abort(), timeout);
         try {
             const path = this.opts.path ?? '/';
-            const url = `http://${this.target.host}:${this.target.port}${path.startsWith('/') ? path : `/${path}`}`;
+            const url = this.target.type === 'unix'
+                ? `http://localhost${path.startsWith('/') ? path : `/${path}`}`
+                : `http://${this.target.host}:${this.target.port}${path.startsWith('/') ? path : `/${path}`}`;
             const resp = await fetch(url, {
                 method: 'GET',
                 headers: healthCheckHeaders(this.opts),
@@ -126,4 +157,8 @@ export class HealthMonitor {
             clearTimeout(timer);
         }
     }
+}
+
+function formatTarget(target: ForwardTarget): string {
+    return target.type === 'unix' ? `unix:${target.path}` : `${target.host}:${target.port}`;
 }

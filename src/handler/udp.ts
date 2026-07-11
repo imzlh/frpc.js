@@ -95,6 +95,9 @@ async function forwardUdp(
     target: ForwardTarget,
     proxyProtocolVersion?: ProxyProtocolVersion,
 ): Promise<Uint8Array> {
+    if (target.type === 'unix') {
+        throw new Error('UDP proxy does not support Unix socket targets');
+    }
     const socket = dgram.createSocket(target.host.includes(':') ? 'udp6' : 'udp4');
     await new Promise<void>((resolve, reject) => {
         socket.once('error', reject);

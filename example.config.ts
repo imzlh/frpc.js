@@ -4,7 +4,7 @@
 //   npx --yes tsx main.ts ./example.config.ts
 //   cno main.ts ./example.config.ts
 
-import { TCP, HTTP, RawHTTP } from './src/types.ts';
+import { TCP, HTTP, RawHTTP, forwardUnix } from './src/types.ts';
 import type { IConfig, HttpResponseData } from './src/types.ts';
 
 export default {
@@ -40,6 +40,10 @@ export default {
         'ssh': new TCP(
             { remotePort: 6000 },
             TCP.forward({ host: '127.0.0.1', port: 22 }),
+        ),
+        'docker': new TCP(
+            { remotePort: 6001 },
+            forwardUnix('/var/run/docker.sock'),
         ),
         'custom': new TCP(
             { remotePort: 7001 },

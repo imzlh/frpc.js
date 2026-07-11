@@ -255,10 +255,12 @@ class SocketReader {
       const cleanup = () => {
         this.socket.off("data", onData);
         this.socket.off("end", onEnd);
+        this.socket.off("close", onEnd);
         this.socket.off("error", onError);
       };
       this.socket.on("data", onData);
       this.socket.on("end", onEnd);
+      this.socket.on("close", onEnd);
       this.socket.on("error", onError);
       this.socket.resume?.();
     });

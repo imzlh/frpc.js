@@ -2,29 +2,46 @@
 
 import { Buffer } from 'node:buffer';
 import type { Socket } from 'node:net';
-import type { HttpOptions, HttpHandler, HttpRequest, StartWorkConnMsg, NetAddr, NetSocket } from '../types.ts';
+import type { HttpHandler, HttpOptions, HttpRequest, NetAddr, NetSocket, StartWorkConnMsg } from '../types.ts';
 import { startTlsServer } from '../net/index.ts';
 import { serveHttp } from '../http/parser.ts';
+import { defaultLogger, formatError, type Logger } from '../log.ts';
 
 export async function handleHttp(
-    socket: NetSocket, swc: StartWorkConnMsg, opts: HttpOptions, handler: HttpHandler, initialData?: Uint8Array,
+    socket: NetSocket,
+    swc: StartWorkConnMsg,
+    opts: HttpOptions,
+    handler: HttpHandler,
+    initialData?: Uint8Array,
+    logger: Logger = defaultLogger,
 ): Promise<void> {
     let s: NetSocket = socket;
 
     if (opts.secure) {
         if (!opts.certFile || !opts.keyFile) {
-            throw new Error(`HTTP proxy "${swc.proxy_name}": secure=true requires certFile + keyFile`);
+            throw new Error(
+                `HTTP proxy "${swc.proxy_name}": secure=true requires certFile + keyFile`,
+            );
         }
         if (initialData && initialData.length > 0 && socket.unshift) {
             socket.unshift(Buffer.from(initialData));
             initialData = undefined;
         }
-        s = await startTlsServer(socket as Socket, { cert: opts.certFile, key: opts.keyFile });
+        s = await startTlsServer(socket as Socket, {
+            cert: opts.certFile,
+            key: opts.keyFile,
+        });
     }
 
     const remoteAddr: NetAddr = { hostname: swc.src_addr, port: swc.src_port };
 
-    for await (const { method, url, headers, body, respond } of serveHttp(s, remoteAddr, initialData)) {
+    for await (
+        const { method, url, headers, body, respond } of serveHttp(
+            s,
+            remoteAddr,
+            initialData,
+        )
+    ) {
         const req: HttpRequest = {
             method,
             url,
@@ -32,10 +49,19 @@ export async function handleHttp(
             body,
         };
 
-        const responseData = await Promise.resolve(handler(req, remoteAddr)).catch((e: unknown) => {
-            console.error(`[frpc] HTTP handler error (${swc.proxy_name}):`, e);
-            return { status: 500, statusText: 'Internal Server Error', headers: {}, body: null };
-        });
+        const responseData = await Promise.resolve(handler(req, remoteAddr)).catch(
+            (e: unknown) => {
+                logger.error(
+                    `HTTP handler failed: proxy="${swc.proxy_name}", source=${remoteAddr.hostname}:${remoteAddr.port}, request=${method} ${url}: ${formatError(e)}`,
+                );
+                return {
+                    status: 500,
+                    statusText: 'Internal Server Error',
+                    headers: {},
+                    body: null,
+                };
+            },
+        );
 
         const resHeaders = new Map<string, string>();
         if (responseData.headers) {

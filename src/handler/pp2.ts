@@ -107,10 +107,14 @@ function parseIp(hostname: string): Uint8Array {
 }
 
 function parseIPv4(hostname: string): Uint8Array {
+    const parts = hostname.split('.');
+    if (parts.length !== 4) throw new Error(`Invalid IPv4 address: ${hostname}`);
     const out = new Uint8Array(4);
-    hostname.split('.').forEach((part, i) => {
-        out[i] = Number(part);
-    });
+    for (let i = 0; i < 4; i++) {
+        const n = Number(parts[i]);
+        if (!Number.isInteger(n) || n < 0 || n > 255) throw new Error(`Invalid IPv4 address: ${hostname}`);
+        out[i] = n;
+    }
     return out;
 }
 

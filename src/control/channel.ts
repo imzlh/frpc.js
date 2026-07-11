@@ -1,15 +1,15 @@
 // src/control/channel.ts — Control channel: login, proxy registration, heartbeat
 
-import { MsgType, MessageReader, beginV2Handshake, createAeadCryptoConn, createCryptoConn, readV2ServerHello, writeMsg, type MessageSocket } from '../protocol/index.ts';
-import { STCPVisitor, connectionOptions, parseServer, serverEndpoint, type IConfig, type NetSocket, type NormalizedConnectionConfig, type ProxyBase, type ProxyCommonOptions, type VisitorBase, type VisitorCommonOptions, type WireProtocol } from '../types.ts';
+import { beginV2Handshake, createAeadCryptoConn, createCryptoConn, MessageReader, type MessageSocket, MsgType, readV2ServerHello, writeMsg } from '../protocol/index.ts';
+import { connectionOptions, type IConfig, type NetSocket, type NormalizedConnectionConfig, parseServer, type ProxyBase, type ProxyCommonOptions, serverEndpoint, STCPVisitor, type VisitorBase, type VisitorCommonOptions, type WireProtocol } from '../types.ts';
 import { connectTo, FrpMuxSession } from '../net/index.ts';
 import { WorkConnPool } from './pool.ts';
 import { WebUI } from '../webui/index.ts';
-import type { LoginMsg, LoginRespMsg, NewProxyRespMsg } from '../protocol/index.ts';
-import { ConsoleLogger, type Logger } from '../log.ts';
+import type { LoginMsg, LoginRespMsg, NewProxyRespMsg, PongMsg } from '../protocol/index.ts';
+import { ConsoleLogger, formatError, type Logger, withLogScope } from '../log.ts';
 import { getRuntimeInfo, runtimeHostname } from '../runtime.ts';
-import { createClientAuth, type ClientAuth } from '../auth.ts';
-import { HealthMonitor, getHealthTarget } from './health.ts';
+import { type ClientAuth, createClientAuth } from '../auth.ts';
+import { getHealthTarget, HealthMonitor } from './health.ts';
 import { readFileSync } from 'node:fs';
 import { STCPVisitorRuntime } from '../visitor/stcp.ts';
 
@@ -43,7 +43,9 @@ export function activeProxyEntries(cfg: IConfig): Array<[string, ProxyBase]> {
     return entries.filter(([name]) => selected.has(name));
 }
 
-export function activeVisitorEntries(cfg: IConfig): Array<[string, VisitorBase]> {
+export function activeVisitorEntries(
+    cfg: IConfig,
+): Array<[string, VisitorBase]> {
     const entries = Object.entries(cfg.visitors ?? {}).filter(([, visitor]) => visitorEnabled(visitor));
     if (!cfg.start?.length) return entries;
     const selected = new Set(cfg.start);
@@ -51,16 +53,12 @@ export function activeVisitorEntries(cfg: IConfig): Array<[string, VisitorBase]>
 }
 
 function proxyEnabled(proxy: ProxyBase): boolean {
-    const opts = 'opts' in proxy
-        ? proxy.opts as ProxyCommonOptions
-        : undefined;
+    const opts = 'opts' in proxy ? proxy.opts as ProxyCommonOptions : undefined;
     return opts?.enabled !== false;
 }
 
 function visitorEnabled(visitor: VisitorBase): boolean {
-    const opts = 'opts' in visitor
-        ? visitor.opts as VisitorCommonOptions
-        : undefined;
+    const opts = 'opts' in visitor ? visitor.opts as VisitorCommonOptions : undefined;
     return opts?.enabled !== false;
 }
 
@@ -73,17 +71,17 @@ export async function buildLoginMsg(
     const info = getRuntimeInfo();
     const loginAuth = await auth.login(timestamp);
     return {
-        version:       '0.1.0',
-        hostname:      runtimeHostname(),
-        os:            info.os,
-        arch:          info.arch,
-        user:          cfg.user ?? '',
+        version: '0.1.0',
+        hostname: runtimeHostname(),
+        os: info.os,
+        arch: info.arch,
+        user: cfg.user ?? '',
         privilege_key: loginAuth.privilege_key,
-        timestamp:     loginAuth.timestamp,
-        run_id:        runId,
-        client_id:     cfg.clientID,
-        pool_count:    connectionOptions(cfg).pool.min,
-        metas:         cfg.metadatas ?? {},
+        timestamp: loginAuth.timestamp,
+        run_id: runId,
+        client_id: cfg.clientID,
+        pool_count: connectionOptions(cfg).pool.min,
+        metas: cfg.metadatas ?? {},
     };
 }
 
@@ -121,7 +119,7 @@ export class ControlChannel {
         this.running = true;
 
         try {
-            this.webui = new WebUI(this.cfg);
+            this.webui = new WebUI(this.cfg, withLogScope(this.log, 'webui'));
             this.webui.start();
 
             const maxRetries = connectionOptions(this.cfg).retries;
@@ -129,16 +127,22 @@ export class ControlChannel {
 
             while (!this.stopped) {
                 try {
+                    this.webui?.setConnectionState('connecting', '', attempt);
                     await this.#connect();
                     attempt = 0;
                 } catch (e) {
                     if (this.stopped) break;
                     attempt++;
                     if (maxRetries > 0 && attempt > maxRetries) {
-                        throw new Error(`[frpc] Max retries (${maxRetries}) exceeded: ${e}`);
+                        throw new Error(
+                            `[frpc] Max retries (${maxRetries}) exceeded: ${e}`,
+                        );
                     }
                     const delay = Math.min(1_000 * 2 ** attempt, 30_000);
-                    this.log.error(`Disconnected (attempt ${attempt}), retry in ${delay}ms:`, toError(e).message);
+                    this.webui?.setConnectionState('reconnecting', formatError(e), attempt);
+                    this.log.error(
+                        `Disconnected (attempt ${attempt}), retry in ${delay}ms: ${formatError(e)}`,
+                    );
                     if (this.cfg.hooks?.onReconnect) {
                         await Promise.resolve(this.cfg.hooks.onReconnect(attempt, delay));
                     }
@@ -175,8 +179,10 @@ export class ControlChannel {
         const tlsOpts = this.#tlsOptions(connOpts, server.hostname);
         const connectionAbort = new AbortController();
 
-        this.log.info(`Connecting → ${endpoint} (tls=${useTls})`);
-        const rawConn = await connectTo(server, useTls, tlsOpts);
+        this.log.info(
+            `Connecting → ${endpoint} (tls=${useTls}, mux=${connOpts.tcpMux}, protocol=${this.wireProtocol}, tcp_keepalive=${connOpts.dialServerKeepalive}s, mux_keepalive=${connOpts.tcpMuxKeepaliveInterval}s, heartbeat=${connOpts.heartbeat}s/${connOpts.heartbeatTimeout}s)`,
+        );
+        const rawConn = await connectTo(server, useTls, tlsOpts, connOpts.dialServerKeepalive);
         if (this.stopped) {
             rawConn.destroy();
             return;
@@ -184,7 +190,7 @@ export class ControlChannel {
         this.conn = rawConn;
         try {
             if (connOpts.tcpMux) {
-                this.mux = new FrpMuxSession(rawConn);
+                this.mux = new FrpMuxSession(rawConn, withLogScope(this.log, 'mux'), connOpts.tcpMuxKeepaliveInterval);
                 this.conn = await this.mux.open();
             }
             this.lastPong = Date.now();
@@ -198,10 +204,20 @@ export class ControlChannel {
                     tls: useTls,
                     tcpMux: connOpts.tcpMux,
                 });
-                await writeMsg(this.conn, MsgType.Login, await buildLoginMsg(this.cfg, this.auth, this.runId, ts), this.wireProtocol);
+                await writeMsg(
+                    this.conn,
+                    MsgType.Login,
+                    await buildLoginMsg(this.cfg, this.auth, this.runId, ts),
+                    this.wireProtocol,
+                );
                 v2Crypto = await readV2ServerHello(this.conn, clientHelloPayload);
             } else {
-                await writeMsg(this.conn, MsgType.Login, await buildLoginMsg(this.cfg, this.auth, this.runId, ts), this.wireProtocol);
+                await writeMsg(
+                    this.conn,
+                    MsgType.Login,
+                    await buildLoginMsg(this.cfg, this.auth, this.runId, ts),
+                    this.wireProtocol,
+                );
             }
 
             this.reader = new MessageReader(this.conn, this.wireProtocol);
@@ -212,34 +228,51 @@ export class ControlChannel {
             this.runId = lrBody.run_id;
             this.log.info(`Logged in  run_id=${this.runId}`);
             this.webui?.setRunId(this.runId);
+            this.webui?.setConnectionState('connected');
             this.reader.close();
             this.conn = this.wireProtocol === 'v2'
-                ? await createAeadCryptoConn(this.conn, this.auth.encryptionKey, v2Crypto!.transcriptHash)
+                ? await createAeadCryptoConn(
+                    this.conn,
+                    this.auth.encryptionKey,
+                    v2Crypto!.transcriptHash,
+                )
                 : await createCryptoConn(this.conn, this.auth.encryptionKey);
             this.reader = new MessageReader(this.conn, this.wireProtocol);
             this.controlReadError = null;
 
             this.proxyMap = new Map();
             this.pool = new WorkConnPool({
-                serverAddr: server, useTls, tlsOpts,
-                openConnection: () => this.mux
-                    ? this.mux.open()
-                    : connectTo(server, useTls, tlsOpts),
-                runId: this.runId, auth: this.auth,
-                proxies: this.proxyMap, max: connOpts.pool.max,
+                serverAddr: server,
+                useTls,
+                tlsOpts,
+                openConnection: () => this.mux ? this.mux.open() : connectTo(server, useTls, tlsOpts, connOpts.dialServerKeepalive),
+                runId: this.runId,
+                auth: this.auth,
+                proxies: this.proxyMap,
+                max: connOpts.pool.max,
                 wireProtocol: this.wireProtocol,
                 hooks: this.cfg.hooks,
+                logger: withLogScope(this.log, 'pool'),
             });
-            const controlDone = Promise.race([this.#heartbeat(connectionAbort.signal), this.#readLoop()]);
+            this.webui?.setPoolStatsProvider(() => this.pool?.stats());
+            const controlDone = Promise.race([
+                this.#heartbeat(connectionAbort.signal),
+                this.#readLoop(),
+            ]);
             const startup = (async () => {
                 if (this.cfg.hooks?.onLogin) {
                     await Promise.resolve(this.cfg.hooks.onLogin(this.runId));
                 }
-                await this.#registerProxies();
                 this.webui?.setProxyMap(this.#allProxyMap());
-                await this.#startVisitors(server, useTls, tlsOpts, this.wireProtocol, () => this.mux
-                    ? this.mux.open()
-                    : connectTo(server, useTls, tlsOpts));
+                await this.#registerProxies();
+                this.webui?.setVisitorMap(this.cfg.visitors ?? {});
+                await this.#startVisitors(
+                    server,
+                    useTls,
+                    tlsOpts,
+                    this.wireProtocol,
+                    () => this.mux ? this.mux.open() : connectTo(server, useTls, tlsOpts, connOpts.dialServerKeepalive),
+                );
                 this.#startHealthMonitors();
             })();
 
@@ -248,9 +281,12 @@ export class ControlChannel {
             await controlDone;
         } finally {
             connectionAbort.abort();
+            if (!this.stopped) this.webui?.setConnectionState('disconnected');
             this.#stopHealthMonitors();
             this.#stopVisitors();
-            this.#rejectPendingProxyResponses(new Error('control channel disconnected'));
+            this.#rejectPendingProxyResponses(
+                new Error('control channel disconnected'),
+            );
             this.pool?.stop();
             this.pool = null;
             this.reader?.close();
@@ -262,7 +298,12 @@ export class ControlChannel {
     #tlsOptions(
         connOpts: NormalizedConnectionConfig,
         defaultServerName: string,
-    ): { ca?: string; servername?: string; rejectUnauthorized?: boolean; customFirstByte?: boolean } | undefined {
+    ): {
+        ca?: string;
+        servername?: string;
+        rejectUnauthorized?: boolean;
+        customFirstByte?: boolean;
+    } | undefined {
         if (!connOpts.tls) return undefined;
         const caFile = connOpts.tlsTrustedCaFile;
         return {
@@ -279,7 +320,9 @@ export class ControlChannel {
         if (mux) {
             mux.close();
         } else {
-            try { this.conn?.destroy(); } catch { /* ignore */ }
+            try {
+                this.conn?.destroy();
+            } catch { /* ignore */ }
         }
         this.conn = null;
     }
@@ -303,14 +346,21 @@ export class ControlChannel {
 
     #allProxyMap(): Map<string, ProxyBase> {
         return new Map(
-            activeProxyEntries(this.cfg).map(([name, proxy]) => [this.#fullProxyName(name), proxy]),
+            activeProxyEntries(this.cfg).map((
+                [name, proxy],
+            ) => [this.#fullProxyName(name), proxy]),
         );
     }
 
     async #startVisitors(
         serverAddr: { hostname: string; port: number },
         useTls: boolean,
-        tlsOpts?: { ca?: string; servername?: string; rejectUnauthorized?: boolean; customFirstByte?: boolean },
+        tlsOpts?: {
+            ca?: string;
+            servername?: string;
+            rejectUnauthorized?: boolean;
+            customFirstByte?: boolean;
+        },
         wireProtocol: WireProtocol = 'v1',
         openConnection?: () => Promise<NetSocket>,
     ): Promise<void> {
@@ -325,17 +375,23 @@ export class ControlChannel {
                     runId: this.runId,
                     user: this.cfg.user,
                     wireProtocol,
+                    logger: withLogScope(this.log, `visitor:${name}`),
+                    keepaliveSeconds: connectionOptions(this.cfg).dialServerKeepalive,
                 });
                 this.visitors.push(runtime);
                 try {
                     await runtime.start();
                 } catch (error) {
+                    this.webui?.setVisitorError(name, formatError(error));
                     runtime.stop();
                     this.visitors = this.visitors.filter((item) => item !== runtime);
                     throw error;
                 }
                 if (!this.conn) return;
-                this.log.info(`Visitor "${name}" listening on ${visitor.opts.bindAddr ?? '127.0.0.1'}:${visitor.opts.bindPort}`);
+                this.webui?.setVisitorActive(name);
+                this.log.info(
+                    `Visitor "${name}" listening on ${visitor.opts.bindAddr ?? '127.0.0.1'}:${visitor.opts.bindPort}`,
+                );
             }
         }
     }
@@ -355,6 +411,7 @@ export class ControlChannel {
                 healthTarget.healthCheck,
                 () => this.#activateProxy(fullName, proxy),
                 () => this.#deactivateProxy(fullName),
+                withLogScope(this.log, `health:${fullName}`),
             );
             this.healthMonitors.set(fullName, monitor);
             monitor.start();
@@ -379,14 +436,22 @@ export class ControlChannel {
 
     async #deactivateProxy(fullName: string): Promise<void> {
         if (this.stopped || !this.conn || !this.proxyMap.has(fullName)) return;
-        await writeMsg(this.conn, MsgType.CloseProxy, { proxy_name: fullName }, this.wireProtocol);
+        await writeMsg(
+            this.conn,
+            MsgType.CloseProxy,
+            { proxy_name: fullName },
+            this.wireProtocol,
+        );
         this.proxyMap.delete(fullName);
         this.pool?.removeProxy(fullName);
-        this.webui?.setProxyError(fullName);
+        this.webui?.setProxyError(fullName, 'Health check failed');
         this.log.warn(`Proxy "${fullName}" health check failed`);
     }
 
-    async #registerProxyDuringReadLoop(fullName: string, proxy: ProxyBase): Promise<NewProxyRespMsg | undefined> {
+    async #registerProxyDuringReadLoop(
+        fullName: string,
+        proxy: ProxyBase,
+    ): Promise<NewProxyRespMsg | undefined> {
         if (!this.conn) return undefined;
         if (this.controlReadError) throw this.controlReadError;
         if (this.pendingProxyResp.has(fullName)) {
@@ -402,18 +467,25 @@ export class ControlChannel {
         void resp.catch(() => {});
 
         try {
-            await writeMsg(this.conn, MsgType.NewProxy, proxy.toNewProxy(fullName), this.wireProtocol);
+            await writeMsg(
+                this.conn,
+                MsgType.NewProxy,
+                proxy.toNewProxy(fullName),
+                this.wireProtocol,
+            );
             const r = await resp;
             if (r.error) {
                 this.log.error(`Proxy "${fullName}" rejected: ${r.error}`);
-                this.webui?.setProxyError(fullName);
+                this.webui?.setProxyError(fullName, r.error);
                 if (this.cfg.hooks?.onProxyError) {
                     await Promise.resolve(this.cfg.hooks.onProxyError(fullName, r.error));
                 }
                 return undefined;
             }
             if (this.cfg.hooks?.onProxyRegister) {
-                await Promise.resolve(this.cfg.hooks.onProxyRegister(fullName, r.remote_addr ?? ''));
+                await Promise.resolve(
+                    this.cfg.hooks.onProxyRegister(fullName, r.remote_addr ?? ''),
+                );
             }
             return r;
         } catch (e) {
@@ -451,20 +523,40 @@ export class ControlChannel {
         const connOpts = connectionOptions(this.cfg);
         const interval = connOpts.heartbeat * 1_000;
         const timeout = connOpts.heartbeatTimeout * 1_000;
-        if (interval <= 0 || timeout <= 0) {
+        if (interval <= 0) {
             await waitForAbort(signal);
             return;
         }
 
+        const sender = this.#sendHeartbeats(signal, interval, connOpts.heartbeat);
+        if (timeout <= 0) {
+            await sender;
+            return;
+        }
+        await Promise.race([sender, this.#watchHeartbeatTimeout(signal, timeout)]);
+    }
+
+    async #sendHeartbeats(signal: AbortSignal, interval: number, intervalSeconds: number): Promise<void> {
         while (!this.stopped && !signal.aborted) {
+            if (!this.conn) break;
+            await writeMsg(
+                this.conn,
+                MsgType.Ping,
+                await this.auth.ping(),
+                this.wireProtocol,
+            );
+            this.log.debug(`Heartbeat sent (interval=${intervalSeconds}s)`);
             await sleep(interval, signal);
-            if (this.stopped || signal.aborted || !this.conn) break;
+        }
+    }
 
+    async #watchHeartbeatTimeout(signal: AbortSignal, timeout: number): Promise<void> {
+        while (!this.stopped && !signal.aborted) {
+            await sleep(1_000, signal);
+            if (this.stopped || signal.aborted) break;
             if (Date.now() - this.lastPong > timeout) {
-                throw new Error('Heartbeat timeout — server unresponsive');
+                throw new Error(`Heartbeat timeout after ${Math.floor(timeout / 1_000)}s without Pong`);
             }
-
-            await writeMsg(this.conn, MsgType.Ping, await this.auth.ping(), this.wireProtocol);
         }
     }
 
@@ -473,11 +565,22 @@ export class ControlChannel {
             while (!this.stopped && this.conn) {
                 const { type, msg } = await this.reader!.readMsg();
                 if (type === MsgType.Pong) {
+                    const pong = msg as PongMsg;
+                    if (pong.error) throw new Error(`Heartbeat rejected by server: ${pong.error}`);
                     this.lastPong = Date.now();
+                    this.log.debug('Heartbeat acknowledged');
                 } else if (type === MsgType.NewProxyResp) {
-                    const handled = this.#resolvePendingProxyResponse(msg as NewProxyRespMsg);
-                    if (!handled) this.log.warn('Unexpected NewProxyResp');
+                    const handled = this.#resolvePendingProxyResponse(
+                        msg as NewProxyRespMsg,
+                    );
+                    if (!handled) {
+                        const body = msg as NewProxyRespMsg;
+                        this.log.warn(
+                            `Unexpected NewProxyResp for proxy "${body.proxy_name || '(missing)'}"`,
+                        );
+                    }
                 } else if (type === MsgType.ReqWorkConn) {
+                    this.log.debug('Server requested a work connection');
                     this.pool?.expand();
                 } else if (type === MsgType.CloseProxy) {
                     const body = msg as { proxy_name?: string };
@@ -485,7 +588,7 @@ export class ControlChannel {
                         this.log.info(`Server closed proxy: ${body.proxy_name}`);
                         this.proxyMap.delete(body.proxy_name);
                         this.pool?.removeProxy(body.proxy_name);
-                        this.webui?.setProxyError(body.proxy_name);
+                        this.webui?.setProxyError(body.proxy_name, 'Closed by server');
                     }
                 } else {
                     this.log.warn(`Unexpected message type: 0x${type.toString(16)}`);

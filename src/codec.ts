@@ -4,12 +4,16 @@ import type { NetSocket } from './types.ts';
 
 export function writeFull(socket: NetSocket, data: Uint8Array): Promise<void> {
     return new Promise((resolve, reject) => {
-        const written = socket.write(data, (err) => {
+        let settled = false;
+        const done = (err?: Error | null) => {
+            if (settled) return;
+            settled = true;
             if (err) reject(err);
             else resolve();
-        });
+        };
+        const written = socket.write(data, done);
         if (written === false) {
-            socket.once('drain', () => resolve());
+            socket.once('drain', () => done());
         }
     });
 }

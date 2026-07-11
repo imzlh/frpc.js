@@ -44,7 +44,7 @@ Deno.test('getHealthTarget — supports TCPMux local backend health checks', () 
     });
 
     assertEquals(getHealthTarget(proxy), {
-        target: { type: 'forward', host: '127.0.0.2', port: 8443 },
+        target: { type: 'tcp', host: '127.0.0.2', port: 8443 },
         healthCheck: { type: 'tcp' },
     });
 });
@@ -58,14 +58,14 @@ Deno.test('getHealthTarget — supports STCP local backend health checks', () =>
     });
 
     assertEquals(getHealthTarget(proxy), {
-        target: { type: 'forward', host: '127.0.0.2', port: 8443 },
+        target: { type: 'tcp', host: '127.0.0.2', port: 8443 },
         healthCheck: { type: 'tcp' },
     });
 });
 
 Deno.test({ name: 'HealthMonitor — reports TCP up and down', sanitizeResources: false, sanitizeOps: false }, async () => {
     const { server, port } = await listen();
-    const target: ForwardTarget = { type: 'forward', host: '127.0.0.1', port };
+    const target: ForwardTarget = { type: 'tcp', host: '127.0.0.1', port };
     let healthy = 0;
     let unhealthy = 0;
     const monitor = new HealthMonitor(
@@ -97,7 +97,7 @@ Deno.test({ name: 'HealthMonitor — retries a failed state callback', sanitizeR
     let attempts = 0;
     let healthy = 0;
     const monitor = new HealthMonitor(
-        { type: 'forward', host: '127.0.0.1', port },
+        { type: 'tcp', host: '127.0.0.1', port },
         { type: 'tcp', intervalSeconds: 0.02, timeoutSeconds: 0.1 },
         () => {
             attempts++;
@@ -128,7 +128,7 @@ Deno.test({ name: 'HealthMonitor — reports HTTP non-2xx as down', sanitizeReso
             resolve((server.address() as { port: number }).port);
         });
     });
-    const target: ForwardTarget = { type: 'forward', host: '127.0.0.1', port };
+    const target: ForwardTarget = { type: 'tcp', host: '127.0.0.1', port };
     let healthy = 0;
     let unhealthy = 0;
     const monitor = new HealthMonitor(
@@ -167,7 +167,7 @@ Deno.test({ name: 'HealthMonitor — sends Go-style HTTP health headers', saniti
             resolve((server.address() as { port: number }).port);
         });
     });
-    const target: ForwardTarget = { type: 'forward', host: '127.0.0.1', port };
+    const target: ForwardTarget = { type: 'tcp', host: '127.0.0.1', port };
     let healthy = 0;
     const monitor = new HealthMonitor(
         target,

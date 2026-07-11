@@ -1,7 +1,7 @@
 // src/types.ts — Core business type definitions
 
-import { Socket, connect as connectNet } from 'node:net';
-import { TLSSocket } from 'node:tls';
+import { connect as connectNet, type Socket } from 'node:net';
+import type { TLSSocket } from 'node:tls';
 import { Buffer } from 'node:buffer';
 
 // ── Network ────────────────────────────────────────────────────────────────
@@ -47,6 +47,10 @@ export interface ConnectionConfig {
     pool?: { min?: number; max?: number };
     heartbeat?: number;
     heartbeatTimeout?: number;
+    /** TCP keepalive probe delay in seconds; negative disables it. */
+    dialServerKeepalive?: number;
+    /** Yamux keepalive interval in seconds; negative disables it. */
+    tcpMuxKeepaliveInterval?: number;
 }
 
 export interface TransportConfig {
@@ -55,6 +59,8 @@ export interface TransportConfig {
     poolCount?: number;
     heartbeatInterval?: number;
     heartbeatTimeout?: number;
+    dialServerKeepalive?: number;
+    tcpMuxKeepaliveInterval?: number;
     tcpMux?: boolean;
     tls?: TransportTLSConfig;
 }
@@ -79,6 +85,8 @@ export interface NormalizedConnectionConfig {
     pool: { min: number; max: number };
     heartbeat: number;
     heartbeatTimeout: number;
+    dialServerKeepalive: number;
+    tcpMuxKeepaliveInterval: number;
 }
 
 export type AuthMethod = 'token' | 'oidc';
@@ -149,12 +157,20 @@ export interface IConfig {
 
 // ── Proxy types ────────────────────────────────────────────────────────────
 
-export interface ForwardTarget {
-    readonly type: 'forward';
+export interface TcpForwardTarget {
+    readonly type: 'tcp';
     host: string;
     port: number;
     proxyProtocol?: boolean | ProxyProtocolVersion;
 }
+
+export interface UnixForwardTarget {
+    readonly type: 'unix';
+    path: string;
+    proxyProtocol?: boolean | ProxyProtocolVersion;
+}
+
+export type ForwardTarget = TcpForwardTarget | UnixForwardTarget;
 
 export type TcpHandler =
     | ForwardTarget
@@ -178,6 +194,8 @@ export interface ProxyCommonOptions {
 export interface ProxyBackendOptions {
     localIP?: string;
     localPort?: number;
+    /** Local Unix domain socket path; overrides localIP/localPort when set. */
+    localUnixSocket?: string;
 }
 
 export interface LoadBalancerOptions {
@@ -301,14 +319,15 @@ export class TCP extends ProxyBase {
         this.handler = handler ?? backendForwardTarget(opts, 'TCP');
     }
 
-    static forward(t: { host: string; port: number; proxyProtocol?: boolean | ProxyProtocolVersion }): ForwardTarget {
-        return { type: 'forward', ...t };
+    static forward(t: { host: string; port: number; proxyProtocol?: boolean | ProxyProtocolVersion }): TcpForwardTarget {
+        return { type: 'tcp', ...t };
     }
 
     toNewProxy(name: string): Record<string, unknown> {
         const wire = proxyOptions(this.opts);
         return {
-            proxy_name: name, proxy_type: 'tcp',
+            proxy_name: name,
+            proxy_type: 'tcp',
             remote_port: this.opts.remotePort,
             group: wire.group,
             group_key: wire.groupKey,
@@ -335,7 +354,8 @@ export class HTTP extends ProxyBase {
         const wire = proxyOptions(this.opts);
         const auth = httpAuthFields(this.opts);
         return {
-            proxy_name: name, proxy_type: this.proxyType,
+            proxy_name: name,
+            proxy_type: this.proxyType,
             custom_domains: domainNames(this.opts),
             subdomain: this.opts.subdomain,
             group: wire.group,
@@ -369,7 +389,8 @@ export class RawHTTP extends ProxyBase {
     toNewProxy(name: string): Record<string, unknown> {
         const wire = proxyOptions(this.opts);
         return {
-            proxy_name: name, proxy_type: this.proxyType,
+            proxy_name: name,
+            proxy_type: this.proxyType,
             custom_domains: domainNames(this.opts),
             subdomain: this.opts.subdomain,
             group: wire.group,
@@ -392,15 +413,16 @@ export class TCPMux extends ProxyBase {
         this.handler = handler ?? backendForwardTarget(opts, 'TCPMux');
     }
 
-    static forward(t: { host: string; port: number; proxyProtocol?: boolean | ProxyProtocolVersion }): ForwardTarget {
-        return { type: 'forward', ...t };
+    static forward(t: { host: string; port: number; proxyProtocol?: boolean | ProxyProtocolVersion }): TcpForwardTarget {
+        return { type: 'tcp', ...t };
     }
 
     toNewProxy(name: string): Record<string, unknown> {
         const wire = proxyOptions(this.opts);
         const auth = httpAuthFields(this.opts);
         return {
-            proxy_name: name, proxy_type: 'tcpmux',
+            proxy_name: name,
+            proxy_type: 'tcpmux',
             custom_domains: domainNames(this.opts),
             subdomain: this.opts.subdomain,
             group: wire.group,
@@ -427,14 +449,15 @@ export class STCP extends ProxyBase {
         this.handler = handler ?? backendForwardTarget(opts, 'STCP');
     }
 
-    static forward(t: { host: string; port: number; proxyProtocol?: boolean | ProxyProtocolVersion }): ForwardTarget {
-        return { type: 'forward', ...t };
+    static forward(t: { host: string; port: number; proxyProtocol?: boolean | ProxyProtocolVersion }): TcpForwardTarget {
+        return { type: 'tcp', ...t };
     }
 
     toNewProxy(name: string): Record<string, unknown> {
         const wire = proxyOptions(this.opts);
         return {
-            proxy_name: name, proxy_type: 'stcp',
+            proxy_name: name,
+            proxy_type: 'stcp',
             group: wire.group,
             group_key: wire.groupKey,
             metas: this.opts.metadatas,
@@ -470,14 +493,15 @@ export class UDP extends ProxyBase {
         this.handler = handler ?? backendForwardTarget(opts, 'UDP');
     }
 
-    static forward(t: { host: string; port: number; proxyProtocol?: boolean | ProxyProtocolVersion }): ForwardTarget {
-        return { type: 'forward', ...t };
+    static forward(t: { host: string; port: number; proxyProtocol?: boolean | ProxyProtocolVersion }): TcpForwardTarget {
+        return { type: 'tcp', ...t };
     }
 
     toNewProxy(name: string): Record<string, unknown> {
         const wire = proxyOptions(this.opts);
         return {
-            proxy_name: name, proxy_type: 'udp',
+            proxy_name: name,
+            proxy_type: 'udp',
             remote_port: this.opts.remotePort,
             group: wire.group,
             group_key: wire.groupKey,
@@ -519,7 +543,7 @@ export type UdpHandler =
 
 // ── Re-export protocol types ────────────────────────────────────────────────
 
-export type { StartWorkConnMsg, NewWorkConnMsg } from './protocol/message.ts';
+export type { NewWorkConnMsg, StartWorkConnMsg } from './protocol/message.ts';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -528,9 +552,7 @@ const BW_UNITS: Record<string, string> = { k: 'KB', m: 'MB', g: 'GB', '': 'B' };
 export function normBw(s?: string): string | undefined {
     if (!s) return undefined;
     return s.replace(/\/s$/i, '').trim()
-            .replace(/^(\d+(?:\.\d+)?)\s*([kmg]?)b?$/i, (_, n, u) =>
-                `${n}${BW_UNITS[u.toLowerCase()] ?? 'MB'}`
-            );
+        .replace(/^(\d+(?:\.\d+)?)\s*([kmg]?)b?$/i, (_, n, u) => `${n}${BW_UNITS[u.toLowerCase()] ?? 'MB'}`);
 }
 
 export function bandwidthLimitBytes(s?: string): number | undefined {
@@ -542,10 +564,7 @@ export function bandwidthLimitBytes(s?: string): number | undefined {
 
     const amount = Number(match[1]);
     const unit = match[2]!.toUpperCase();
-    const scale = unit === 'GB' ? 1024 * 1024 * 1024
-        : unit === 'MB' ? 1024 * 1024
-        : unit === 'KB' ? 1024
-        : 1;
+    const scale = unit === 'GB' ? 1024 * 1024 * 1024 : unit === 'MB' ? 1024 * 1024 : unit === 'KB' ? 1024 : 1;
     return Math.floor(amount * scale);
 }
 
@@ -579,14 +598,24 @@ export function targetProxyProtocolVersion(
 }
 
 export function backendForwardTarget(opts: ProxyBackendOptions, proxyType: string): ForwardTarget {
+    if (opts.localUnixSocket) {
+        return {
+            type: 'unix',
+            path: opts.localUnixSocket,
+        };
+    }
     if (opts.localPort === undefined) {
-        throw new Error(`${proxyType} proxy requires a handler or localPort`);
+        throw new Error(`${proxyType} proxy requires a handler, localPort, or localUnixSocket`);
     }
     return {
-        type: 'forward',
+        type: 'tcp',
         host: opts.localIP ?? '127.0.0.1',
         port: opts.localPort,
     };
+}
+
+export function forwardUnix(path: string, opts?: { proxyProtocol?: boolean | ProxyProtocolVersion }): UnixForwardTarget {
+    return { type: 'unix', path, ...opts };
 }
 
 export function httpBackendHandler(opts: ProxyBackendOptions, proxyType: string): HttpHandler {
@@ -606,7 +635,9 @@ export function httpBackendHandler(opts: ProxyBackendOptions, proxyType: string)
             });
             return await readHttpBackendResponse(socket, req.method === 'HEAD');
         } finally {
-            try { socket.destroy(); } catch { /* ignore */ }
+            try {
+                socket.destroy();
+            } catch { /* ignore */ }
         }
     };
 }
@@ -625,12 +656,24 @@ const HOP_BY_HOP_HEADERS = new Set([
 
 function connectHttpBackend(target: ForwardTarget): Promise<Socket> {
     return new Promise((resolve, reject) => {
-        const socket = connectNet({ host: target.host, port: target.port });
+        const timeout = setTimeout(() => {
+            done(new Error(
+                target.type === 'unix'
+                    ? `Connection to unix:${target.path} timed out`
+                    : `Connection to ${target.host}:${target.port} timed out`,
+            ));
+        }, 10_000);
+        const socket = target.type === 'unix'
+            ? connectNet({ path: target.path })
+            : connectNet({ host: target.host, port: target.port });
         const done = (err?: Error) => {
+            clearTimeout(timeout);
             socket.off('connect', onConnect);
             socket.off('error', onError);
-            if (err) reject(err);
-            else resolve(socket);
+            if (err) {
+                socket.destroy();
+                reject(err);
+            } else resolve(socket);
         };
         const onConnect = () => done();
         const onError = (err: Error) => done(err);
@@ -652,9 +695,7 @@ function writeHttpBackendRequest(socket: Socket, req: {
         '',
         '',
     ].join('\r\n');
-    const payload = req.body.length > 0
-        ? Buffer.concat([Buffer.from(head, 'utf8'), Buffer.from(req.body)])
-        : Buffer.from(head, 'utf8');
+    const payload = req.body.length > 0 ? Buffer.concat([Buffer.from(head, 'utf8'), Buffer.from(req.body)]) : Buffer.from(head, 'utf8');
     return new Promise((resolve, reject) => {
         socket.write(payload, (err) => err ? reject(err) : resolve());
     });
@@ -669,7 +710,10 @@ function httpBackendRequestHeaders(input: Map<string, string>, target: ForwardTa
         if (lower === 'content-length' || HOP_BY_HOP_HEADERS.has(lower)) continue;
         headers.push(`${key}: ${value}`);
     }
-    if (!hasHost) headers.unshift(`host: ${target.host}:${target.port}`);
+    if (!hasHost) {
+        const hostValue = target.type === 'unix' ? 'localhost' : `${target.host}:${target.port}`;
+        headers.unshift(`host: ${hostValue}`);
+    }
     headers.push(`content-length: ${body.byteLength}`);
     headers.push('connection: close');
     return headers;
@@ -753,8 +797,15 @@ function tryDecodeChunkedBody(body: Buffer): Buffer | null {
         if (!Number.isFinite(size)) throw new Error(`Invalid chunk size: ${sizeText}`);
         offset = lineEnd + 2;
         if (size === 0) {
+            // Chunked body ends with an empty chunk followed by \r\n (or trailers + \r\n\r\n)
+            if (body.byteLength < offset + 2) return null;
+            // Verify the terminating CRLF is present
+            if (body[offset] === 0x0d && body[offset + 1] === 0x0a) {
+                return Buffer.concat(chunks);
+            }
+            // There may be trailers; look for the final \r\n\r\n
             const trailerEnd = body.indexOf('\r\n\r\n', offset);
-            if (trailerEnd === -1 && body.byteLength < offset + 2) return null;
+            if (trailerEnd === -1) return null;
             return Buffer.concat(chunks);
         }
         if (body.byteLength < offset + size + 2) return null;
@@ -787,10 +838,10 @@ function readSocketChunk(socket: Socket): Promise<Buffer | null> {
             socket.off('close', onEnd);
             socket.off('error', onError);
         };
-        socket.once('data', onData);
-        socket.once('end', onEnd);
-        socket.once('close', onEnd);
-        socket.once('error', onError);
+        socket.on('data', onData);
+        socket.on('end', onEnd);
+        socket.on('close', onEnd);
+        socket.on('error', onError);
         socket.resume();
     });
 }
@@ -843,13 +894,18 @@ export function serverEndpoint(cfg: Pick<IConfig, 'server' | 'serverAddr' | 'ser
 export function connectionOptions(cfg: Pick<IConfig, 'connection' | 'transport'>): NormalizedConnectionConfig {
     const poolMin = cfg.connection?.pool?.min ?? cfg.transport?.poolCount ?? 1;
     const wireProtocol = cfg.transport?.wireProtocol ?? 'v1';
+    const tcpMux = cfg.connection?.tcpMux ?? cfg.transport?.tcpMux ?? true;
+    const heartbeatDefault = tcpMux ? -1 : 30;
+    const heartbeatTimeoutDefault = tcpMux ? -1 : 90;
+    const heartbeat = nonZero(cfg.connection?.heartbeat ?? cfg.transport?.heartbeatInterval, heartbeatDefault);
+    const heartbeatTimeout = nonZero(cfg.connection?.heartbeatTimeout ?? cfg.transport?.heartbeatTimeout, heartbeatTimeoutDefault);
     if (wireProtocol !== 'v1' && wireProtocol !== 'v2') {
         throw new Error(`Unsupported transport.wireProtocol: ${wireProtocol}`);
     }
     return {
         wireProtocol,
         tls: cfg.connection?.tls ?? cfg.transport?.tls?.enable ?? false,
-        tcpMux: cfg.connection?.tcpMux ?? cfg.transport?.tcpMux ?? true,
+        tcpMux,
         tlsDisableCustomFirstByte: cfg.transport?.tls?.disableCustomTLSFirstByte ?? true,
         tlsTrustedCaFile: cfg.connection?.tlsTrustedCaFile ?? cfg.transport?.tls?.trustedCaFile,
         tlsServerName: cfg.connection?.tlsServerName ?? cfg.transport?.tls?.serverName,
@@ -859,9 +915,15 @@ export function connectionOptions(cfg: Pick<IConfig, 'connection' | 'transport'>
             min: poolMin,
             max: cfg.connection?.pool?.max ?? Math.max(5, poolMin),
         },
-        heartbeat: cfg.connection?.heartbeat ?? cfg.transport?.heartbeatInterval ?? 30,
-        heartbeatTimeout: cfg.connection?.heartbeatTimeout ?? cfg.transport?.heartbeatTimeout ?? 90,
+        heartbeat,
+        heartbeatTimeout,
+        dialServerKeepalive: nonZero(cfg.connection?.dialServerKeepalive ?? cfg.transport?.dialServerKeepalive, 7200),
+        tcpMuxKeepaliveInterval: nonZero(cfg.connection?.tcpMuxKeepaliveInterval ?? cfg.transport?.tcpMuxKeepaliveInterval, 30),
     };
+}
+
+function nonZero(value: number | undefined, fallback: number): number {
+    return value === undefined || value === 0 ? fallback : value;
 }
 
 export function webuiOptions(cfg: Pick<IConfig, 'webui' | 'webServer'>): Required<Pick<WebuiConfig, 'enabled' | 'host' | 'port'>> & Pick<WebuiConfig, 'user' | 'password'> {

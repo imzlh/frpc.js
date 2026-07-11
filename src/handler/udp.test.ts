@@ -2,7 +2,7 @@
 
 import { assertEquals } from '@std/assert';
 import { Buffer } from 'node:buffer';
-import { connect, createServer, Socket } from 'node:net';
+import { connect, createServer, type Socket } from 'node:net';
 import type { Server } from 'node:net';
 import { handleUdp } from './udp.ts';
 import { MsgType, readMsg, writeMsg } from '../protocol/index.ts';

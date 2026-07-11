@@ -2,7 +2,7 @@
 
 import { Buffer } from 'node:buffer';
 import { targetProxyProtocolVersion, type TcpHandler, type ForwardTarget, type StartWorkConnMsg, type NetAddr, type NetSocket, type ProxyProtocolVersion } from '../types.ts';
-import { connectTcp } from '../net/index.ts';
+import { connectTcp, connectUnix } from '../net/index.ts';
 import { writeProxyProtocol } from './pp2.ts';
 import { pipeConn } from '../protocol/index.ts';
 
@@ -17,7 +17,9 @@ async function forward(
     initialData?: Uint8Array,
     proxyProtocolVersion?: ProxyProtocolVersion,
 ): Promise<void> {
-    const local = await connectTcp({ hostname: t.host, port: t.port });
+    const local = t.type === 'unix'
+        ? await connectUnix(t.path)
+        : await connectTcp({ hostname: t.host, port: t.port });
     try {
         const version = targetProxyProtocolVersion(t, proxyProtocolVersion);
         if (version) {

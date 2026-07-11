@@ -1,13 +1,14 @@
 // src/net/tls.ts — TLS server/client using node:tls
 
-import { TLSSocket, connect as tlsConnect, createServer as createTlsServer } from 'node:tls';
-import { Socket, connect as connectTcp, isIP } from 'node:net';
+import { connect as tlsConnect, createServer as createTlsServer, TLSSocket } from 'node:tls';
+import { connect as connectTcp, isIP, type Socket } from 'node:net';
 import { readFileSync } from 'node:fs';
+import { configureTcpKeepAlive } from './keepalive.ts';
 
 // frps consumes this byte before the TLS ClientHello (FRPTLSHeadByte in frp).
 const FRP_TLS_HEAD_BYTE = Buffer.from([0x17]);
 
-export { TLSSocket, tlsConnect, createTlsServer };
+export { createTlsServer, tlsConnect, TLSSocket };
 export type { TlsOptions as TlsServerOpts } from 'node:tls';
 
 /** Wrap a raw TCP socket as a TLS server connection (for HTTPS termination) */
@@ -31,10 +32,9 @@ export function startTlsServer(socket: Socket, opts: { cert: string; key: string
 export function startTlsConnect(
     addr: { hostname: string; port: number },
     opts?: { ca?: string; servername?: string; rejectUnauthorized?: boolean; customFirstByte?: boolean },
+    keepaliveSeconds?: number,
 ): Promise<TLSSocket> {
-    const servername = opts?.servername && isIP(opts.servername) === 0
-        ? opts.servername
-        : undefined;
+    const servername = opts?.servername && isIP(opts.servername) === 0 ? opts.servername : undefined;
     if (!opts?.customFirstByte) {
         return new Promise((resolve, reject) => {
             const tlsSocket = tlsConnect({
@@ -44,7 +44,10 @@ export function startTlsConnect(
                 servername,
                 rejectUnauthorized: opts?.rejectUnauthorized,
             });
-            tlsSocket.once('secureConnect', () => resolve(tlsSocket));
+            tlsSocket.once('secureConnect', () => {
+                configureTcpKeepAlive(tlsSocket, keepaliveSeconds);
+                resolve(tlsSocket);
+            });
             tlsSocket.once('error', reject);
         });
     }
@@ -57,6 +60,7 @@ export function startTlsConnect(
         };
         rawSocket.once('error', fail);
         rawSocket.once('connect', () => {
+            configureTcpKeepAlive(rawSocket, keepaliveSeconds);
             rawSocket.write(FRP_TLS_HEAD_BYTE, (err) => {
                 if (err) return fail(err);
                 rawSocket.removeListener('error', fail);
@@ -66,7 +70,10 @@ export function startTlsConnect(
                     servername,
                     rejectUnauthorized: opts?.rejectUnauthorized,
                 });
-                tlsSocket.once('secureConnect', () => resolve(tlsSocket));
+                tlsSocket.once('secureConnect', () => {
+                    configureTcpKeepAlive(tlsSocket, keepaliveSeconds);
+                    resolve(tlsSocket);
+                });
                 tlsSocket.once('error', reject);
             });
         });

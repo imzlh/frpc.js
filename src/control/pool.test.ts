@@ -5,6 +5,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { WorkConnPool } from './pool.ts';
 import { MsgType, readMsg, writeMsg } from '../protocol/index.ts';
 import { TCP, type NetAddr, type NetSocket } from '../types.ts';
+import type { Logger } from '../log.ts';
 import { createClientAuth } from '../auth.ts';
 import type { NewWorkConnMsg, StartWorkConnMsg } from '../protocol/index.ts';
 
@@ -23,6 +24,57 @@ function waitFor(check: () => boolean, label: string): Promise<void> {
         tick();
     });
 }
+
+function captureLogger(errors: string[]): Logger {
+    return {
+        debug() {},
+        info() {},
+        warn() {},
+        error(message) { errors.push(message); },
+    };
+}
+
+Deno.test({ name: 'WorkConnPool — reports server rejection without a fake proxy name', sanitizeResources: false, sanitizeOps: false }, async () => {
+    const errors: string[] = [];
+    let accepted: Socket | undefined;
+    const server = createServer(async (socket) => {
+        accepted = socket;
+        await readMsg(socket);
+        await writeMsg(socket, MsgType.StartWorkConn, {
+            proxy_name: '',
+            src_addr: '',
+            src_port: 0,
+            dst_addr: '',
+            dst_port: 0,
+            error: 'connect to server failed: EOF1!',
+        } satisfies StartWorkConnMsg);
+    });
+    const port = await new Promise<number>((resolve) => {
+        server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port));
+    });
+    const pool = new WorkConnPool({
+        serverAddr: { hostname: '127.0.0.1', port },
+        useTls: false,
+        runId: 'run-id',
+        auth: createClientAuth({ server: '127.0.0.1', token: 'test-token', proxies: {} }),
+        proxies: new Map(),
+        max: 1,
+        logger: captureLogger(errors),
+    });
+
+    try {
+        pool.expand();
+        await waitFor(() => errors.length === 1, 'server rejection log');
+        assertEquals(errors, ['Work connection rejected by server: connect to server failed: EOF1!']);
+        assertEquals(pool.stats().requested, 1);
+        assertEquals(pool.stats().rejected, 1);
+        assertEquals(pool.stats().accepted, 0);
+    } finally {
+        pool.stop();
+        accepted?.destroy();
+        await close(server);
+    }
+});
 
 Deno.test({ name: 'WorkConnPool — emits connect and disconnect hooks around work dispatch', sanitizeResources: false, sanitizeOps: false }, async () => {
     const proxyName = 'tcp_echo';
@@ -84,6 +136,9 @@ Deno.test({ name: 'WorkConnPool — emits connect and disconnect hooks around wo
             { type: 'connect', name: proxyName, addr: { hostname: '203.0.113.9', port: 54321 } },
             { type: 'disconnect', name: proxyName, addr: { hostname: '203.0.113.9', port: 54321 } },
         ]);
+        assertEquals(pool.stats().accepted, 1);
+        assertEquals(pool.stats().completed, 1);
+        assertEquals(pool.stats().failed, 0);
     } finally {
         pool.stop();
         accepted?.destroy();

@@ -2,7 +2,7 @@
 
 import { assertEquals, assertThrows } from '@std/assert';
 import { createServer } from 'node:net';
-import { HTTP, RawHTTP, STCP, TCP, TCPMux, UDP, backendForwardTarget, bandwidthLimitBytes, connectionOptions, domainNames, headerOperations, healthCheckHeaders, httpAuthFields, httpBackendHandler, normBw, parseServer, proxyOptions, responseHeaderOperations, serverEndpoint, targetProxyProtocolVersion, targetServerProxyName, webuiOptions, wireBwMode } from './types.ts';
+import { backendForwardTarget, bandwidthLimitBytes, connectionOptions, domainNames, headerOperations, healthCheckHeaders, HTTP, httpAuthFields, httpBackendHandler, normBw, parseServer, proxyOptions, RawHTTP, responseHeaderOperations, serverEndpoint, STCP, targetProxyProtocolVersion, targetServerProxyName, TCP, TCPMux, UDP, webuiOptions, wireBwMode } from './types.ts';
 
 Deno.test('normBw — undefined returns undefined', () => {
     assertEquals(normBw(undefined), undefined);
@@ -83,40 +83,79 @@ Deno.test('serverEndpoint — brackets IPv6 serverAddr', () => {
 });
 
 Deno.test('connectionOptions — maps Go-style transport fields', () => {
-    assertEquals(connectionOptions({
-        transport: {
-            poolCount: 4,
-            tcpMux: false,
-            heartbeatInterval: 10,
-            heartbeatTimeout: 40,
-            tls: {
-                enable: true,
-                disableCustomTLSFirstByte: false,
-                trustedCaFile: '/ca.pem',
-                serverName: 'frps.example.com',
-                insecureSkipVerify: true,
+    assertEquals(
+        connectionOptions({
+            transport: {
+                poolCount: 4,
+                tcpMux: false,
+                heartbeatInterval: 10,
+                heartbeatTimeout: 40,
+                dialServerKeepalive: 120,
+                tcpMuxKeepaliveInterval: 15,
+                tls: {
+                    enable: true,
+                    disableCustomTLSFirstByte: false,
+                    trustedCaFile: '/ca.pem',
+                    serverName: 'frps.example.com',
+                    insecureSkipVerify: true,
+                },
             },
+        }),
+        {
+            wireProtocol: 'v1',
+            tls: true,
+            tcpMux: false,
+            tlsDisableCustomFirstByte: false,
+            tlsTrustedCaFile: '/ca.pem',
+            tlsServerName: 'frps.example.com',
+            tlsInsecureSkipVerify: true,
+            retries: 3,
+            pool: { min: 4, max: 5 },
+            heartbeat: 10,
+            heartbeatTimeout: 40,
+            dialServerKeepalive: 120,
+            tcpMuxKeepaliveInterval: 15,
         },
-    }), {
-        wireProtocol: 'v1',
-        tls: true,
-        tcpMux: false,
-        tlsDisableCustomFirstByte: false,
-        tlsTrustedCaFile: '/ca.pem',
-        tlsServerName: 'frps.example.com',
-        tlsInsecureSkipVerify: true,
-        retries: 3,
-        pool: { min: 4, max: 5 },
-        heartbeat: 10,
-        heartbeatTimeout: 40,
-    });
+    );
 });
 
 Deno.test('connectionOptions — connection config overrides transport aliases', () => {
-    assertEquals(connectionOptions({
-        connection: {
+    assertEquals(
+        connectionOptions({
+            connection: {
+                tls: false,
+                tcpMux: true,
+                tlsTrustedCaFile: '/connection-ca.pem',
+                tlsServerName: 'connection.example.com',
+                tlsInsecureSkipVerify: false,
+                retries: 9,
+                pool: { min: 2, max: 8 },
+                heartbeat: 11,
+                heartbeatTimeout: 44,
+                dialServerKeepalive: -1,
+                tcpMuxKeepaliveInterval: 12,
+            },
+            transport: {
+                poolCount: 4,
+                tcpMux: false,
+                heartbeatInterval: 10,
+                heartbeatTimeout: 40,
+                dialServerKeepalive: 120,
+                tcpMuxKeepaliveInterval: 15,
+                tls: {
+                    enable: true,
+                    disableCustomTLSFirstByte: false,
+                    trustedCaFile: '/transport-ca.pem',
+                    serverName: 'transport.example.com',
+                    insecureSkipVerify: true,
+                },
+            },
+        }),
+        {
+            wireProtocol: 'v1',
             tls: false,
             tcpMux: true,
+            tlsDisableCustomFirstByte: false,
             tlsTrustedCaFile: '/connection-ca.pem',
             tlsServerName: 'connection.example.com',
             tlsInsecureSkipVerify: false,
@@ -124,74 +163,112 @@ Deno.test('connectionOptions — connection config overrides transport aliases',
             pool: { min: 2, max: 8 },
             heartbeat: 11,
             heartbeatTimeout: 44,
+            dialServerKeepalive: -1,
+            tcpMuxKeepaliveInterval: 12,
         },
-        transport: {
-            poolCount: 4,
-            tcpMux: false,
-            heartbeatInterval: 10,
-            heartbeatTimeout: 40,
-            tls: {
-                enable: true,
-                disableCustomTLSFirstByte: false,
-                trustedCaFile: '/transport-ca.pem',
-                serverName: 'transport.example.com',
-                insecureSkipVerify: true,
-            },
-        },
-    }), {
+    );
+});
+
+Deno.test('connectionOptions — matches frp keepalive defaults with tcp mux', () => {
+    assertEquals(connectionOptions({}), {
         wireProtocol: 'v1',
         tls: false,
         tcpMux: true,
-        tlsDisableCustomFirstByte: false,
-        tlsTrustedCaFile: '/connection-ca.pem',
-        tlsServerName: 'connection.example.com',
-        tlsInsecureSkipVerify: false,
-        retries: 9,
-        pool: { min: 2, max: 8 },
-        heartbeat: 11,
-        heartbeatTimeout: 44,
+        tlsDisableCustomFirstByte: true,
+        tlsTrustedCaFile: undefined,
+        tlsServerName: undefined,
+        tlsInsecureSkipVerify: undefined,
+        retries: 3,
+        pool: { min: 1, max: 5 },
+        heartbeat: -1,
+        heartbeatTimeout: -1,
+        dialServerKeepalive: 7200,
+        tcpMuxKeepaliveInterval: 30,
     });
 });
 
+Deno.test('connectionOptions — enables application heartbeat by default without tcp mux', () => {
+    const options = connectionOptions({ transport: { tcpMux: false } });
+    assertEquals(options.heartbeat, 30);
+    assertEquals(options.heartbeatTimeout, 90);
+});
+
+Deno.test('connectionOptions — treats zero keepalive values as frp defaults', () => {
+    const options = connectionOptions({
+        transport: {
+            tcpMux: true,
+            heartbeatInterval: 0,
+            heartbeatTimeout: 0,
+            dialServerKeepalive: 0,
+            tcpMuxKeepaliveInterval: 0,
+        },
+    });
+    assertEquals(options.heartbeat, -1);
+    assertEquals(options.heartbeatTimeout, -1);
+    assertEquals(options.dialServerKeepalive, 7200);
+    assertEquals(options.tcpMuxKeepaliveInterval, 30);
+});
+
+Deno.test('connectionOptions — preserves negative values that disable keepalive layers', () => {
+    const options = connectionOptions({
+        transport: {
+            heartbeatInterval: -1,
+            heartbeatTimeout: -1,
+            dialServerKeepalive: -1,
+            tcpMuxKeepaliveInterval: -1,
+        },
+    });
+    assertEquals(options.heartbeat, -1);
+    assertEquals(options.heartbeatTimeout, -1);
+    assertEquals(options.dialServerKeepalive, -1);
+    assertEquals(options.tcpMuxKeepaliveInterval, -1);
+});
+
 Deno.test('webuiOptions — keeps legacy webui config', () => {
-    assertEquals(webuiOptions({
-        webui: {
+    assertEquals(
+        webuiOptions({
+            webui: {
+                enabled: false,
+                host: '0.0.0.0',
+                port: 7500,
+                user: 'legacy',
+                password: 'secret',
+            },
+            webServer: {
+                addr: '127.0.0.2',
+                port: 7600,
+                user: 'go',
+                password: 'ignored',
+            },
+        }),
+        {
             enabled: false,
             host: '0.0.0.0',
             port: 7500,
             user: 'legacy',
             password: 'secret',
         },
-        webServer: {
-            addr: '127.0.0.2',
-            port: 7600,
-            user: 'go',
-            password: 'ignored',
-        },
-    }), {
-        enabled: false,
-        host: '0.0.0.0',
-        port: 7500,
-        user: 'legacy',
-        password: 'secret',
-    });
+    );
 });
 
 Deno.test('webuiOptions — maps Go-style webServer config', () => {
-    assertEquals(webuiOptions({
-        webServer: {
-            addr: '0.0.0.0',
+    assertEquals(
+        webuiOptions({
+            webServer: {
+                addr: '0.0.0.0',
+                port: 7500,
+                user: 'admin',
+                password: 'admin',
+            },
+        }),
+        {
+            enabled: true,
+            host: '0.0.0.0',
             port: 7500,
             user: 'admin',
             password: 'admin',
         },
-    }), {
-        enabled: true,
-        host: '0.0.0.0',
-        port: 7500,
-        user: 'admin',
-        password: 'admin',
-    });
+    );
 });
 
 Deno.test('webuiOptions — webServer port 0 disables dashboard', () => {
@@ -213,49 +290,55 @@ Deno.test('webuiOptions — preserves current default dashboard behavior', () =>
 });
 
 Deno.test('proxyOptions — maps Go-style nested proxy options', () => {
-    assertEquals(proxyOptions({
-        loadBalancer: { group: 'group-a', groupKey: 'key-a' },
-        transport: {
+    assertEquals(
+        proxyOptions({
+            loadBalancer: { group: 'group-a', groupKey: 'key-a' },
+            transport: {
+                bandwidthLimit: '10KB/s',
+                bandwidthLimitMode: 'server',
+                useEncryption: true,
+                useCompression: true,
+                proxyProtocolVersion: 'v1',
+            },
+        }),
+        {
+            group: 'group-a',
+            groupKey: 'key-a',
             bandwidthLimit: '10KB/s',
             bandwidthLimitMode: 'server',
             useEncryption: true,
             useCompression: true,
             proxyProtocolVersion: 'v1',
         },
-    }), {
-        group: 'group-a',
-        groupKey: 'key-a',
-        bandwidthLimit: '10KB/s',
-        bandwidthLimitMode: 'server',
-        useEncryption: true,
-        useCompression: true,
-        proxyProtocolVersion: 'v1',
-    });
+    );
 });
 
 Deno.test('proxyOptions — flat proxy options override nested aliases', () => {
-    assertEquals(proxyOptions({
-        group: 'flat-group',
-        groupKey: 'flat-key',
-        bandwidthLimit: '20KB',
-        bandwidthLimitMode: 'client',
-        useEncryption: false,
-        useCompression: false,
-        loadBalancer: { group: 'nested-group', groupKey: 'nested-key' },
-        transport: {
-            bandwidthLimit: '10KB/s',
-            bandwidthLimitMode: 'server',
-            useEncryption: true,
-            useCompression: true,
+    assertEquals(
+        proxyOptions({
+            group: 'flat-group',
+            groupKey: 'flat-key',
+            bandwidthLimit: '20KB',
+            bandwidthLimitMode: 'client',
+            useEncryption: false,
+            useCompression: false,
+            loadBalancer: { group: 'nested-group', groupKey: 'nested-key' },
+            transport: {
+                bandwidthLimit: '10KB/s',
+                bandwidthLimitMode: 'server',
+                useEncryption: true,
+                useCompression: true,
+            },
+        }),
+        {
+            group: 'flat-group',
+            groupKey: 'flat-key',
+            bandwidthLimit: '20KB',
+            bandwidthLimitMode: 'client',
+            useEncryption: false,
+            useCompression: false,
         },
-    }), {
-        group: 'flat-group',
-        groupKey: 'flat-key',
-        bandwidthLimit: '20KB',
-        bandwidthLimitMode: 'client',
-        useEncryption: false,
-        useCompression: false,
-    });
+    );
 });
 
 Deno.test('targetProxyProtocolVersion — uses Go-style transport fallback', () => {
@@ -267,18 +350,21 @@ Deno.test('targetProxyProtocolVersion — uses Go-style transport fallback', () 
 
 Deno.test('targetProxyProtocolVersion — explicit forward target overrides transport fallback', () => {
     assertEquals(
-        targetProxyProtocolVersion(TCP.forward({
-            host: '127.0.0.1',
-            port: 8080,
-            proxyProtocol: true,
-        }), 'v1'),
+        targetProxyProtocolVersion(
+            TCP.forward({
+                host: '127.0.0.1',
+                port: 8080,
+                proxyProtocol: true,
+            }),
+            'v1',
+        ),
         'v2',
     );
 });
 
 Deno.test('backendForwardTarget — maps Go-style localIP/localPort backend', () => {
     assertEquals(backendForwardTarget({ localIP: '127.0.0.2', localPort: 8080 }, 'TCP'), {
-        type: 'forward',
+        type: 'tcp',
         host: '127.0.0.2',
         port: 8080,
     });
@@ -286,7 +372,7 @@ Deno.test('backendForwardTarget — maps Go-style localIP/localPort backend', ()
 
 Deno.test('backendForwardTarget — defaults localIP to Go frp default', () => {
     assertEquals(backendForwardTarget({ localPort: 8080 }, 'TCP'), {
-        type: 'forward',
+        type: 'tcp',
         host: '127.0.0.1',
         port: 8080,
     });
@@ -296,7 +382,7 @@ Deno.test('backendForwardTarget — requires localPort when handler is omitted',
     assertThrows(
         () => new TCP({ remotePort: 6000 }),
         Error,
-        'TCP proxy requires a handler or localPort',
+        'TCP proxy requires a handler, localPort, or localUnixSocket',
     );
 });
 
@@ -382,24 +468,30 @@ Deno.test({ name: 'httpBackendHandler — decodes chunked backend responses', sa
 });
 
 Deno.test('healthCheckHeaders — maps Go-style httpHeaders array', () => {
-    assertEquals(healthCheckHeaders({
-        type: 'http',
-        httpHeaders: [
-            { name: 'x-health-token', value: 'secret' },
-            { name: 'x-env', value: 'test' },
-        ],
-    }), {
-        'x-health-token': 'secret',
-        'x-env': 'test',
-    });
+    assertEquals(
+        healthCheckHeaders({
+            type: 'http',
+            httpHeaders: [
+                { name: 'x-health-token', value: 'secret' },
+                { name: 'x-env', value: 'test' },
+            ],
+        }),
+        {
+            'x-health-token': 'secret',
+            'x-env': 'test',
+        },
+    );
 });
 
 Deno.test('healthCheckHeaders — flat headers override httpHeaders alias', () => {
-    assertEquals(healthCheckHeaders({
-        type: 'http',
-        headers: { 'x-health-token': 'flat' },
-        httpHeaders: [{ name: 'x-health-token', value: 'nested' }],
-    }), { 'x-health-token': 'flat' });
+    assertEquals(
+        healthCheckHeaders({
+            type: 'http',
+            headers: { 'x-health-token': 'flat' },
+            httpHeaders: [{ name: 'x-health-token', value: 'nested' }],
+        }),
+        { 'x-health-token': 'flat' },
+    );
 });
 
 Deno.test('headerOperations — maps Go-style set operation', () => {
@@ -426,14 +518,17 @@ Deno.test('httpAuthFields — maps Go-style httpUser and httpPassword', () => {
 });
 
 Deno.test('httpAuthFields — legacy httpAuth overrides Go-style aliases', () => {
-    assertEquals(httpAuthFields({
-        httpUser: 'go-user',
-        httpPassword: 'go-pass',
-        httpAuth: { user: 'legacy-user', password: 'legacy-pass' },
-    }), {
-        user: 'legacy-user',
-        password: 'legacy-pass',
-    });
+    assertEquals(
+        httpAuthFields({
+            httpUser: 'go-user',
+            httpPassword: 'go-pass',
+            httpAuth: { user: 'legacy-user', password: 'legacy-pass' },
+        }),
+        {
+            user: 'legacy-user',
+            password: 'legacy-pass',
+        },
+    );
 });
 
 Deno.test('domainNames — maps Go-style customDomains alias', () => {
@@ -441,10 +536,13 @@ Deno.test('domainNames — maps Go-style customDomains alias', () => {
 });
 
 Deno.test('domainNames — legacy domains override customDomains alias', () => {
-    assertEquals(domainNames({
-        domains: ['legacy.example.com'],
-        customDomains: ['go.example.com'],
-    }), ['legacy.example.com']);
+    assertEquals(
+        domainNames({
+            domains: ['legacy.example.com'],
+            customDomains: ['go.example.com'],
+        }),
+        ['legacy.example.com'],
+    );
 });
 
 Deno.test('HTTP.toNewProxy — maps request and response header options', () => {

@@ -12,6 +12,7 @@ with the frp V1 and V2 Wire message protocols.
 - **Pool**: Configurable work connection pool (min/max)
 - **Health checks**: TCP/HTTP checks for forwarded local backends
 - **Heartbeat**: Ping/Pong with timeout detection
+- **Keepalive**: Go-compatible TCP probes (`dialServerKeepalive`) and configurable TCP mux probes (`tcpMuxKeepaliveInterval`). With `tcpMux: true`, application heartbeat defaults to disabled; set `heartbeatInterval`/`heartbeatTimeout` explicitly to enable it.
 - **Reconnect**: Exponential backoff with max retries
 - **WebUI**: Built-in dashboard (port 7400) with Basic Auth
 - **ProxyProtocol v1/v2**: Optional header injection for TCP and UDP
@@ -63,6 +64,8 @@ export default {
     poolCount: 1,
     heartbeatInterval: 30,
     heartbeatTimeout: 90,
+    dialServerKeepalive: 7200,
+    tcpMuxKeepaliveInterval: 30,
     tls: { enable: false },
   },
   webServer: {
