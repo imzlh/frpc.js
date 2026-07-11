@@ -28,7 +28,7 @@ async function forward(
                 local.write(initialData, (err) => err ? reject(err) : resolve());
             });
         }
-        await pipeConn(socket as any, local);
+        await pipeConn(socket, local);
     } finally {
         try { local.destroy(); } catch { /* ignore */ }
     }

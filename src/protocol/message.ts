@@ -30,7 +30,7 @@ export interface LoginMsg {
     user: string; privilege_key: string; timestamp: number;
     run_id: string; client_id?: string; pool_count: number;
     metas: Record<string, string>;
-    client_spec: { version: string };
+    client_spec?: { type?: 'ssh-tunnel'; always_auth_pass?: boolean };
 }
 
 export interface LoginRespMsg {

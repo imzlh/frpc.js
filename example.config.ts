@@ -14,16 +14,12 @@ export default {
 
     connection: {
         tls: false,
+        tcpMux: true,
         retries: 3,
         pool: { min: 1, max: 5 },
         heartbeat: 30,
         heartbeatTimeout: 90,
     },
-    transport: {
-        // Set to 'v2' when the frps instance supports the current Wire protocol.
-        wireProtocol: 'v2',
-    },
-
     metadatas: { env: 'prod' },
 
     webui: {

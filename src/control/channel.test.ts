@@ -91,6 +91,7 @@ Deno.test('buildLoginMsg — includes client_id and common client fields', async
     assertEquals(msg.timestamp, 123);
     assertEquals(msg.pool_count, 3);
     assertEquals(msg.metas, { env: 'test' });
+    assertEquals(msg.client_spec, undefined);
 });
 
 Deno.test('buildLoginMsg — uses transport poolCount when connection pool is absent', async () => {
@@ -98,6 +99,13 @@ Deno.test('buildLoginMsg — uses transport poolCount when connection pool is ab
     const msg = await buildLoginMsg(cfg, createClientAuth(cfg), 'run-id', 123);
 
     assertEquals(msg.pool_count, 4);
+});
+
+Deno.test('buildLoginMsg — allows an empty run ID on the first login', async () => {
+    const cfg = config();
+    const msg = await buildLoginMsg(cfg, createClientAuth(cfg), '', 123);
+
+    assertEquals(msg.run_id, '');
 });
 
 function config(overrides: Partial<IConfig> = {}): IConfig {

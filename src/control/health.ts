@@ -55,27 +55,31 @@ export class HealthMonitor {
 
     async #tick(): Promise<void> {
         if (this.stopped) return;
-        const ok = await this.#check().then(() => true).catch(() => false);
-        if (ok) {
-            this.failed = 0;
-            if (!this.healthy) {
-                this.healthy = true;
-                await Promise.resolve(this.onHealthy());
+        try {
+            const ok = await this.#check().then(() => true).catch(() => false);
+            if (this.stopped) return;
+            if (ok) {
+                this.failed = 0;
+                if (!this.healthy) {
+                    await Promise.resolve(this.onHealthy());
+                    this.healthy = true;
+                }
+            } else if (this.healthy) {
+                this.failed++;
+                if (this.failed >= (this.opts.maxFailed ?? 1)) {
+                    await Promise.resolve(this.onUnhealthy());
+                    this.healthy = false;
+                }
             }
-        } else if (this.healthy) {
-            this.failed++;
-            if (this.failed >= (this.opts.maxFailed ?? 1)) {
-                this.healthy = false;
-                await Promise.resolve(this.onUnhealthy());
-            }
+        } finally {
+            this.#schedule((this.opts.intervalSeconds ?? 10) * 1_000);
         }
-        this.#schedule((this.opts.intervalSeconds ?? 10) * 1_000);
     }
 
     #schedule(ms: number): void {
         if (this.stopped) return;
         this.timer = setTimeout(() => {
-            void this.#tick();
+            void this.#tick().catch(() => {});
         }, ms);
     }
 
@@ -111,8 +115,12 @@ export class HealthMonitor {
                 headers: healthCheckHeaders(this.opts),
                 signal: controller.signal,
             });
-            if (Math.floor(resp.status / 100) !== 2) {
-                throw new Error(`health check status ${resp.status}`);
+            try {
+                if (Math.floor(resp.status / 100) !== 2) {
+                    throw new Error(`health check status ${resp.status}`);
+                }
+            } finally {
+                await resp.body?.cancel();
             }
         } finally {
             clearTimeout(timer);

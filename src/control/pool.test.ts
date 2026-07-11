@@ -4,7 +4,7 @@ import { assertEquals } from '@std/assert';
 import { createServer, type Server, type Socket } from 'node:net';
 import { WorkConnPool } from './pool.ts';
 import { MsgType, readMsg, writeMsg } from '../protocol/index.ts';
-import { TCP, type NetAddr } from '../types.ts';
+import { TCP, type NetAddr, type NetSocket } from '../types.ts';
 import { createClientAuth } from '../auth.ts';
 import type { NewWorkConnMsg, StartWorkConnMsg } from '../protocol/index.ts';
 
@@ -66,7 +66,6 @@ Deno.test({ name: 'WorkConnPool — emits connect and disconnect hooks around wo
                 socket.end();
             })],
         ]),
-        min: 0,
         max: 1,
         hooks: {
             onConnect(name, addr) {
@@ -90,4 +89,41 @@ Deno.test({ name: 'WorkConnPool — emits connect and disconnect hooks around wo
         accepted?.destroy();
         await close(server);
     }
+});
+
+Deno.test('WorkConnPool — closes a connection that finishes opening after stop', async () => {
+    let resolveConnection!: (socket: NetSocket) => void;
+    const connection = new Promise<NetSocket>((resolve) => {
+        resolveConnection = resolve;
+    });
+    let writes = 0;
+    let destroyed = false;
+    const socket = {
+        write(_data: Uint8Array, callback?: (error?: Error | null) => void) {
+            writes++;
+            callback?.();
+            return true;
+        },
+        destroy() {
+            destroyed = true;
+        },
+        on() { return this; },
+        off() { return this; },
+    } as unknown as NetSocket;
+    const pool = new WorkConnPool({
+        openConnection: () => connection,
+        serverAddr: { hostname: '127.0.0.1', port: 7000 },
+        useTls: false,
+        runId: 'old-run-id',
+        auth: createClientAuth({ server: '127.0.0.1', token: 'test-token', proxies: {} }),
+        proxies: new Map(),
+        max: 1,
+    });
+
+    pool.expand();
+    pool.stop();
+    resolveConnection(socket);
+    await waitFor(() => destroyed, 'late connection cleanup');
+
+    assertEquals(writes, 0);
 });

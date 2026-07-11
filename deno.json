@@ -6,15 +6,19 @@
     "verbatimModuleSyntax": false
   },
   "tasks": {
+    "lint": "deno lint src main.ts scripts/e2e_real_frps.ts",
     "check": "deno check main.ts src/**/*.ts scripts/e2e_real_frps.ts",
-    "test": "deno test --allow-net src/",
+    "test": "deno test --allow-net --allow-env src/",
     "cno:test": "cno test src/",
     "cno:cache": "cno cache main.ts",
-    "verify": "deno task check && deno task test && deno task cno:test && deno task cno:cache && deno task e2e",
+    "verify": "deno task lint && deno task check && deno task test && deno task cno:test && deno task cno:cache && deno task e2e",
     "e2e": "deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_real_frps.ts",
     "e2e:node": "deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_real_frps.ts --runtime=node"
   },
   "imports": {
-    "@std/assert": "jsr:@std/assert@1"
+    "@chainsafe/libp2p-yamux": "npm:@chainsafe/libp2p-yamux@8.0.1",
+    "@libp2p/utils": "npm:@libp2p/utils@7.2.4",
+    "@std/assert": "jsr:@std/assert@1",
+    "uint8arraylist": "npm:uint8arraylist@3.0.2"
   }
 }

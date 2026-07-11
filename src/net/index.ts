@@ -5,3 +5,4 @@ export type { AddressInfo } from 'node:net';
 export { connectTcp, connectTo, listenTcp, toNetAddr, socketAddr } from './conn.ts';
 export { startTlsServer, startTlsConnect } from './tls.ts';
 export type { TlsServerOpts } from './tls.ts';
+export { FrpMuxSession } from './mux.ts';

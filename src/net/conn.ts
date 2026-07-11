@@ -12,7 +12,7 @@ export function toNetAddr(addr: AddressInfo): NetAddr {
     return { hostname: addr.address, port: addr.port };
 }
 
-export async function connectTcp(addr: { hostname: string; port: number }): Promise<Socket> {
+export function connectTcp(addr: { hostname: string; port: number }): Promise<Socket> {
     return new Promise((resolve, reject) => {
         const socket = connect({ host: addr.hostname, port: addr.port });
         socket.on('connect', () => resolve(socket));
@@ -20,10 +20,10 @@ export async function connectTcp(addr: { hostname: string; port: number }): Prom
     });
 }
 
-export async function connectTo(
+export function connectTo(
     addr: { hostname: string; port: number },
     tls?: boolean,
-    tlsOpts?: { ca?: string; servername?: string; rejectUnauthorized?: boolean },
+    tlsOpts?: { ca?: string; servername?: string; rejectUnauthorized?: boolean; customFirstByte?: boolean },
 ): Promise<NetSocket> {
     if (tls) {
         return startTlsConnect(addr, tlsOpts);
@@ -31,8 +31,16 @@ export async function connectTo(
     return connectTcp(addr);
 }
 
-export function listenTcp(host: string, port: number): Server {
-    return createServer({ host, port } as any);
+export function listenTcp(host: string, port: number): Promise<Server> {
+    return new Promise((resolve, reject) => {
+        const server = createServer();
+        const onError = (error: Error) => reject(error);
+        server.once('error', onError);
+        server.listen(port, host, () => {
+            server.off('error', onError);
+            resolve(server);
+        });
+    });
 }
 
 export function socketAddr(socket: NetSocket): { local: NetAddr; remote: NetAddr } {

@@ -1,9 +1,10 @@
 // src/handler/http.ts — HTTP/HTTPS proxy handler
 
 import { Buffer } from 'node:buffer';
+import type { Socket } from 'node:net';
 import type { HttpOptions, HttpHandler, HttpRequest, StartWorkConnMsg, NetAddr, NetSocket } from '../types.ts';
 import { startTlsServer } from '../net/index.ts';
-import { serveHttp, writeResponse, HttpResponse } from '../http/parser.ts';
+import { serveHttp } from '../http/parser.ts';
 
 export async function handleHttp(
     socket: NetSocket, swc: StartWorkConnMsg, opts: HttpOptions, handler: HttpHandler, initialData?: Uint8Array,
@@ -18,7 +19,7 @@ export async function handleHttp(
             socket.unshift(Buffer.from(initialData));
             initialData = undefined;
         }
-        s = await startTlsServer(socket as any, { cert: opts.certFile, key: opts.keyFile });
+        s = await startTlsServer(socket as Socket, { cert: opts.certFile, key: opts.keyFile });
     }
 
     const remoteAddr: NetAddr = { hostname: swc.src_addr, port: swc.src_port };

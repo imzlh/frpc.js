@@ -86,10 +86,12 @@ Deno.test('connectionOptions — maps Go-style transport fields', () => {
     assertEquals(connectionOptions({
         transport: {
             poolCount: 4,
+            tcpMux: false,
             heartbeatInterval: 10,
             heartbeatTimeout: 40,
             tls: {
                 enable: true,
+                disableCustomTLSFirstByte: false,
                 trustedCaFile: '/ca.pem',
                 serverName: 'frps.example.com',
                 insecureSkipVerify: true,
@@ -98,6 +100,8 @@ Deno.test('connectionOptions — maps Go-style transport fields', () => {
     }), {
         wireProtocol: 'v1',
         tls: true,
+        tcpMux: false,
+        tlsDisableCustomFirstByte: false,
         tlsTrustedCaFile: '/ca.pem',
         tlsServerName: 'frps.example.com',
         tlsInsecureSkipVerify: true,
@@ -112,6 +116,7 @@ Deno.test('connectionOptions — connection config overrides transport aliases',
     assertEquals(connectionOptions({
         connection: {
             tls: false,
+            tcpMux: true,
             tlsTrustedCaFile: '/connection-ca.pem',
             tlsServerName: 'connection.example.com',
             tlsInsecureSkipVerify: false,
@@ -122,10 +127,12 @@ Deno.test('connectionOptions — connection config overrides transport aliases',
         },
         transport: {
             poolCount: 4,
+            tcpMux: false,
             heartbeatInterval: 10,
             heartbeatTimeout: 40,
             tls: {
                 enable: true,
+                disableCustomTLSFirstByte: false,
                 trustedCaFile: '/transport-ca.pem',
                 serverName: 'transport.example.com',
                 insecureSkipVerify: true,
@@ -134,6 +141,8 @@ Deno.test('connectionOptions — connection config overrides transport aliases',
     }), {
         wireProtocol: 'v1',
         tls: false,
+        tcpMux: true,
+        tlsDisableCustomFirstByte: false,
         tlsTrustedCaFile: '/connection-ca.pem',
         tlsServerName: 'connection.example.com',
         tlsInsecureSkipVerify: false,

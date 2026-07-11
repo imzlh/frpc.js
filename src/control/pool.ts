@@ -8,29 +8,24 @@ import type { ClientAuth } from '../auth.ts';
 import type { StartWorkConnMsg } from '../protocol/index.ts';
 
 export interface PoolConfig {
+    openConnection?: () => Promise<NetSocket>;
     serverAddr: { hostname: string; port: number };
     useTls: boolean;
-    tlsOpts?: { ca?: string; servername?: string; rejectUnauthorized?: boolean };
+    tlsOpts?: { ca?: string; servername?: string; rejectUnauthorized?: boolean; customFirstByte?: boolean };
     runId: string;
     auth: ClientAuth;
     proxies: Map<string, ProxyBase>;
-    min: number;
     max: number;
     wireProtocol?: WireProtocol;
     hooks?: Hooks;
 }
 
 export class WorkConnPool {
-    private idle = 0;
     private total = 0;
     private live = true;
     private conns = new Set<NetSocket>();
 
     constructor(private cfg: PoolConfig) {}
-
-    start(): void {
-        for (let i = 0; i < this.cfg.min; i++) this.#spawn();
-    }
 
     expand(): void { this.#spawn(); }
 
@@ -57,50 +52,43 @@ export class WorkConnPool {
             if (this.live) console.error('[pool] worker error:', e?.message ?? e);
         }).finally(() => {
             this.total--;
-            this.#refill();
         });
     }
 
-    #refill(): void {
-        if (!this.live) return;
-        const deficit = this.cfg.min - (this.idle + this.total);
-        for (let i = 0; i < deficit; i++) this.#spawn();
-    }
-
     async #connect(): Promise<NetSocket> {
-        const conn = await connectTo(this.cfg.serverAddr, this.cfg.useTls, this.cfg.tlsOpts);
-        if ((this.cfg.wireProtocol ?? 'v1') === 'v2') await writeV2Magic(conn);
-        return conn;
+        const conn = await (this.cfg.openConnection
+            ? this.cfg.openConnection()
+            : connectTo(this.cfg.serverAddr, this.cfg.useTls, this.cfg.tlsOpts));
+        try {
+            if ((this.cfg.wireProtocol ?? 'v1') === 'v2') await writeV2Magic(conn);
+            return conn;
+        } catch (error) {
+            try { conn.destroy(); } catch { /* ignore */ }
+            throw error;
+        }
     }
 
     async #worker(): Promise<void> {
         const conn = await this.#connect();
+        if (!this.live) {
+            try { conn.destroy(); } catch { /* ignore */ }
+            return;
+        }
         const wireProtocol = this.cfg.wireProtocol ?? 'v1';
         this.conns.add(conn);
-        let isIdle = false;
         try {
             await writeMsg(conn, MsgType.NewWorkConn, await this.cfg.auth.newWorkConn(this.cfg.runId), wireProtocol);
 
-            this.idle++;
-            isIdle = true;
             let swc: StartWorkConnMsg;
             let initialData = new Uint8Array();
             try {
                 const { type, msg, tail } = await readMsgWithTail(conn, wireProtocol);
-                this.idle--;
-                isIdle = false;
                 if (type !== MsgType.StartWorkConn) return;
                 swc = msg as StartWorkConnMsg;
                 initialData = new Uint8Array(tail);
             } catch {
-                if (isIdle) {
-                    this.idle--;
-                    isIdle = false;
-                }
                 return;
             }
-
-            this.#refill();
 
             if (swc.error) {
                 console.error(`[pool] StartWorkConn error for "${swc.proxy_name}": ${swc.error}`);
@@ -109,7 +97,6 @@ export class WorkConnPool {
 
             await this.#dispatch(conn, swc, initialData);
         } finally {
-            if (isIdle) this.idle--;
             this.conns.delete(conn);
             try { conn.destroy(); } catch { /* ignore */ }
         }

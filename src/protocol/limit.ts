@@ -90,7 +90,7 @@ export class RateLimitedConn extends Duplex {
         callback(error);
     }
 
-    async #take(bytes: number): Promise<void> {
+    #take(bytes: number): Promise<void> {
         this.chain = this.chain.then(() => sleep(this.bucket.reserve(bytes)));
         return this.chain;
     }

@@ -39,6 +39,7 @@ export interface HttpResponseData {
 
 export interface ConnectionConfig {
     tls?: boolean;
+    tcpMux?: boolean;
     tlsTrustedCaFile?: string;
     tlsServerName?: string;
     tlsInsecureSkipVerify?: boolean;
@@ -54,11 +55,13 @@ export interface TransportConfig {
     poolCount?: number;
     heartbeatInterval?: number;
     heartbeatTimeout?: number;
+    tcpMux?: boolean;
     tls?: TransportTLSConfig;
 }
 
 export interface TransportTLSConfig {
     enable?: boolean;
+    disableCustomTLSFirstByte?: boolean;
     trustedCaFile?: string;
     serverName?: string;
     insecureSkipVerify?: boolean;
@@ -67,6 +70,8 @@ export interface TransportTLSConfig {
 export interface NormalizedConnectionConfig {
     wireProtocol: WireProtocol;
     tls: boolean;
+    tcpMux: boolean;
+    tlsDisableCustomFirstByte: boolean;
     tlsTrustedCaFile?: string;
     tlsServerName?: string;
     tlsInsecureSkipVerify?: boolean;
@@ -844,6 +849,8 @@ export function connectionOptions(cfg: Pick<IConfig, 'connection' | 'transport'>
     return {
         wireProtocol,
         tls: cfg.connection?.tls ?? cfg.transport?.tls?.enable ?? false,
+        tcpMux: cfg.connection?.tcpMux ?? cfg.transport?.tcpMux ?? true,
+        tlsDisableCustomFirstByte: cfg.transport?.tls?.disableCustomTLSFirstByte ?? true,
         tlsTrustedCaFile: cfg.connection?.tlsTrustedCaFile ?? cfg.transport?.tls?.trustedCaFile,
         tlsServerName: cfg.connection?.tlsServerName ?? cfg.transport?.tls?.serverName,
         tlsInsecureSkipVerify: cfg.connection?.tlsInsecureSkipVerify ?? cfg.transport?.tls?.insecureSkipVerify,

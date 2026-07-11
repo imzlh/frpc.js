@@ -59,7 +59,7 @@ export default {
   start: ["ssh", "web"],
   logLevel: "info",
   transport: {
-    wireProtocol: "v2",
+    tcpMux: true,
     poolCount: 1,
     heartbeatInterval: 30,
     heartbeatTimeout: 90,
@@ -136,10 +136,12 @@ restore, TCPMux HTTP CONNECT, ProxyProtocol v1/v2, HTTP, HTTP health check
 failover and restore, HTTP group, HTTP options (subdomain/location/auth/
 route-by-user/request headers/response headers/host rewrite), HTTPS, RawHTTP,
 UDP forwarding, and UDP ProxyProtocol v1/v2 for both plain TCP and TLS
-transport. Node.js via `tsx` can
+transport. The control and work connections use the same yamux path enabled by
+default in Go `frpc`/`frps`. Node.js 22+ via `tsx` can
 be checked separately when changing Node compatibility:
 
 ```bash
+npm install
 deno task e2e:node
 ```
 
@@ -159,14 +161,25 @@ deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_rea
 deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_real_frps.ts --scenario=tls --runtime=cno
 ```
 
-Pass `--wire=v2` to validate the V2 Wire path. The default remains `v1` for
-compatibility with older servers:
+Pass `--wire=v2` to validate the V2 Wire path. V2 was added to upstream `dev`
+after `v0.68.1`, so a released `v0.68.1` server must stay on the default `v1`:
 
 ```bash
 deno run --allow-net --allow-read --allow-write=/tmp --allow-run scripts/e2e_real_frps.ts --scenario=plain --runtime=deno --wire=v2
 ```
 
+For an upstream build that includes V2, opt in explicitly:
+
+```typescript
+transport: { wireProtocol: "v2" }
+```
+
+TLS uses the standard ClientHello by default, matching current Go `frpc`. Set
+`transport.tls.disableCustomTLSFirstByte` to `false` only for a server setup
+that requires the legacy `0x17` prefix. Supplying `trustedCaFile` enables
+certificate verification unless `insecureSkipVerify` is explicitly `true`.
+
 ## Not Implemented (vs Go frp)
 
-- yamux multiplexing, WebSocket/QUIC transport
-- STCP/XTCP (P2P visitor mode)
+- WebSocket/QUIC transport
+- XTCP/SUDP visitors

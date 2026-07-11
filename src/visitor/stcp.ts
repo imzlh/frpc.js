@@ -7,9 +7,10 @@ import { targetServerProxyName, type NetSocket, type STCPVisitor, type VisitorCo
 import type { NewVisitorConnRespMsg } from '../protocol/index.ts';
 
 export interface VisitorRuntimeConfig {
+    openConnection?: () => Promise<NetSocket>;
     serverAddr: { hostname: string; port: number };
     useTls: boolean;
-    tlsOpts?: { ca?: string; servername?: string; rejectUnauthorized?: boolean };
+    tlsOpts?: { ca?: string; servername?: string; rejectUnauthorized?: boolean; customFirstByte?: boolean };
     runId: string;
     user?: string;
     wireProtocol?: WireProtocol;
@@ -18,6 +19,7 @@ export interface VisitorRuntimeConfig {
 export class STCPVisitorRuntime {
     private server: Server | undefined;
     private sockets = new Set<Socket>();
+    private visitorSockets = new Set<NetSocket>();
     private stopped = false;
 
     constructor(
@@ -28,13 +30,28 @@ export class STCPVisitorRuntime {
 
     start(): Promise<void> {
         const opts = this.visitor.opts;
-        if (opts.bindPort <= 0) return Promise.resolve();
+        if (opts.bindPort <= 0 || this.stopped) return Promise.resolve();
         return new Promise((resolve, reject) => {
-            const server = createServer((socket) => this.#handleUserConn(socket));
+            const server = createServer((socket) => {
+                if (this.stopped) {
+                    socket.destroy();
+                    return;
+                }
+                this.#handleUserConn(socket);
+            });
             this.server = server;
-            server.once('error', reject);
+            const onError = (error: Error) => {
+                if (this.server === server) this.server = undefined;
+                try { server.close(); } catch { /* not listening */ }
+                reject(error);
+            };
+            server.once('error', onError);
             server.listen(opts.bindPort, opts.bindAddr ?? '127.0.0.1', () => {
-                server.off('error', reject);
+                server.off('error', onError);
+                if (this.stopped) {
+                    server.close();
+                    if (this.server === server) this.server = undefined;
+                }
                 resolve();
             });
         });
@@ -46,6 +63,10 @@ export class STCPVisitorRuntime {
             try { socket.destroy(); } catch { /* ignore */ }
         }
         this.sockets.clear();
+        for (const socket of this.visitorSockets) {
+            try { socket.destroy(); } catch { /* ignore */ }
+        }
+        this.visitorSockets.clear();
         try { this.server?.close(); } catch { /* ignore */ }
         this.server = undefined;
     }
@@ -61,18 +82,28 @@ export class STCPVisitorRuntime {
     }
 
     async #proxyUserConn(userConn: Socket): Promise<void> {
-        const visitorConn = await this.#dialVisitorConn(this.visitor.opts);
+        const { conn: visitorConn, raw } = await this.#dialVisitorConn(this.visitor.opts);
+        if (this.stopped || userConn.destroyed) {
+            try { visitorConn.destroy(); } catch { /* ignore */ }
+            this.visitorSockets.delete(raw);
+            return;
+        }
         try {
             await pipeConn(userConn as NetSocket, visitorConn as NetSocket);
         } finally {
+            this.visitorSockets.delete(raw);
             try { visitorConn.destroy(); } catch { /* ignore */ }
             try { userConn.destroy(); } catch { /* ignore */ }
         }
     }
 
-    async #dialVisitorConn(opts: VisitorCommonOptions): Promise<NetSocket> {
-        const raw = await connectTo(this.cfg.serverAddr, this.cfg.useTls, this.cfg.tlsOpts);
+    async #dialVisitorConn(opts: VisitorCommonOptions): Promise<{ conn: NetSocket; raw: NetSocket }> {
+        const raw = await (this.cfg.openConnection
+            ? this.cfg.openConnection()
+            : connectTo(this.cfg.serverAddr, this.cfg.useTls, this.cfg.tlsOpts));
+        this.visitorSockets.add(raw);
         try {
+            if (this.stopped) throw new Error('visitor stopped');
             const wireProtocol = this.cfg.wireProtocol ?? 'v1';
             if (wireProtocol === 'v2') await writeV2Magic(raw);
             const timestamp = Math.floor(Date.now() / 1000);
@@ -95,6 +126,7 @@ export class STCPVisitorRuntime {
                 throw new Error(`NewVisitorConn rejected: ${resp.error}`);
             }
         } catch (err) {
+            this.visitorSockets.delete(raw);
             try { raw.destroy(err as Error); } catch { /* ignore */ }
             throw err;
         }
@@ -106,6 +138,6 @@ export class STCPVisitorRuntime {
         if (opts.transport?.useCompression) {
             conn = createCompressedConn(conn) as unknown as NetSocket;
         }
-        return conn;
+        return { conn, raw };
     }
 }

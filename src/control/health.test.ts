@@ -92,6 +92,31 @@ Deno.test({ name: 'HealthMonitor — reports TCP up and down', sanitizeResources
     }
 });
 
+Deno.test({ name: 'HealthMonitor — retries a failed state callback', sanitizeResources: false, sanitizeOps: false }, async () => {
+    const { server, port } = await listen();
+    let attempts = 0;
+    let healthy = 0;
+    const monitor = new HealthMonitor(
+        { type: 'forward', host: '127.0.0.1', port },
+        { type: 'tcp', intervalSeconds: 0.02, timeoutSeconds: 0.1 },
+        () => {
+            attempts++;
+            if (attempts === 1) throw new Error('registration failed');
+            healthy++;
+        },
+        () => {},
+    );
+
+    try {
+        monitor.start();
+        await waitFor(() => healthy === 1, 'healthy callback retry');
+        assertEquals(attempts, 2);
+    } finally {
+        monitor.stop();
+        await close(server);
+    }
+});
+
 Deno.test({ name: 'HealthMonitor — reports HTTP non-2xx as down', sanitizeResources: false, sanitizeOps: false }, async () => {
     let ok = true;
     const server = createHttpServer((_, res) => {

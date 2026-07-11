@@ -95,7 +95,7 @@ export class CnoHttpParser implements HttpParser {
 }
 
 /** Write an HTTP response to a socket */
-export async function writeResponse(socket: NetSocket, res: { status: number; statusText?: string; headers?: Map<string, string>; body?: Uint8Array | null }): Promise<void> {
+export function writeResponse(socket: NetSocket, res: { status: number; statusText?: string; headers?: Map<string, string>; body?: Uint8Array | null }): Promise<void> {
     return new Promise((resolve, reject) => {
         const statusText = res.statusText || STATUS_TEXT[res.status] || 'Unknown';
         let head = `HTTP/1.1 ${res.status} ${statusText}\r\n`;

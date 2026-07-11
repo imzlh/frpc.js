@@ -1,0 +1,17 @@
+{
+  "name": "frpc-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.12"
+  },
+  "dependencies": {
+    "@chainsafe/libp2p-yamux": "8.0.1",
+    "@libp2p/utils": "7.2.4",
+    "uint8arraylist": "3.0.2"
+  }
+}

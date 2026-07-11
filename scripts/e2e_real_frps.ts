@@ -19,9 +19,35 @@ interface ChildHandle {
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(scriptDir, "..");
 const frpsPath = resolve(rootDir, "frp/bin/frps");
-const cnoPath = resolve(rootDir, "cno");
+const cnoPath = findCnoPath();
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+function findCnoPath(): string {
+  const candidates = [
+    optionalEnv("CNO_BIN"),
+    resolve(rootDir, "cno"),
+    resolve(rootDir, "../cno-cli/build/stage/cno"),
+  ];
+  return candidates.find((path) => path && isFile(path)) ??
+    candidates.find((path): path is string => Boolean(path))!;
+}
+
+function optionalEnv(name: string): string | undefined {
+  try {
+    return Deno.env.get(name);
+  } catch {
+    return undefined;
+  }
+}
+
+function isFile(path: string): boolean {
+  try {
+    return Deno.statSync(path).isFile;
+  } catch {
+    return false;
+  }
+}
 
 function runtimeFilter(): RuntimeName[] {
   const arg = Deno.args.find((value) => value.startsWith("--runtime="));
@@ -141,7 +167,7 @@ async function assertChildAlive(handle: ChildHandle): Promise<void> {
   }
 }
 
-async function childLogs(handles: ChildHandle[]): Promise<string> {
+function childLogs(handles: ChildHandle[]): string {
   const parts: string[] = [];
   for (const handle of handles) {
     if (handle.stdout.trim()) {
@@ -154,7 +180,7 @@ async function childLogs(handles: ChildHandle[]): Promise<string> {
   return parts.join("\n");
 }
 
-async function tcpPort(): Promise<number> {
+function tcpPort(): number {
   const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
   const port = (listener.addr as Deno.NetAddr).port;
   listener.close();
@@ -206,7 +232,7 @@ async function createSelfSignedCert(tempDir: string): Promise<{
 
 async function waitFor(
   label: string,
-  fn: () => Promise<boolean>,
+  fn: () => boolean | Promise<boolean>,
   timeoutMs = 10_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -979,11 +1005,11 @@ function startRawBackend(port: number): {
   };
 }
 
-async function assertEqual(
+function assertEqual(
   label: string,
   actual: string,
   expected: string,
-): Promise<void> {
+): void {
   if (actual !== expected) {
     throw new Error(
       `${label}: expected ${JSON.stringify(expected)}, got ${
@@ -1025,7 +1051,7 @@ async function runRuntime(
 ): Promise<void> {
   const command = runtime === "deno" ? Deno.execPath() : runtime === "cno" ? cnoPath : "setsid";
   const args = runtime === "deno"
-    ? ["run", "--allow-net", "--allow-read", "main.ts", configPath]
+    ? ["run", "--allow-net", "--allow-read", "--allow-env", "main.ts", configPath]
     : runtime === "cno"
     ? ["main.ts", configPath]
     : ["--wait", "npx", "--yes", "tsx", "main.ts", configPath];
@@ -1060,6 +1086,9 @@ async function runRuntime(
         handle.stdout.includes('Proxy "udp_pp2"') &&
         handle.stdout.includes('Proxy "udp_echo"');
     });
+    if (handle.stderr.includes("Disconnected")) {
+      throw new Error(`${scenario}/${runtime} reconnected during startup:\n${handle.stderr}`);
+    }
 
     await waitFor(`${scenario}/${runtime} HTTP proxy readiness`, async () => {
       await assertChildAlive(handle);
@@ -1197,7 +1226,7 @@ async function runRuntime(
     const tcpGroupFailedMarker = 'Proxy "tcp_group_b" health check failed';
     const tcpGroupFailedCount = countOccurrences(handle.stderr, tcpGroupFailedMarker);
     await controls.stopTcpGroupB();
-    await waitFor(`${runtime} TCP group health reports failed backend`, async () => {
+    await waitFor(`${runtime} TCP group health reports failed backend`, () => {
       return countOccurrences(handle.stderr, tcpGroupFailedMarker) > tcpGroupFailedCount;
     });
     await waitFor(`${runtime} TCP group health removes failed backend`, async () => {
@@ -1210,7 +1239,7 @@ async function runRuntime(
     const tcpGroupSuccessMarker = 'Proxy "tcp_group_b" health check success';
     const tcpGroupSuccessCount = countOccurrences(handle.stdout, tcpGroupSuccessMarker);
     controls.startTcpGroupB();
-    await waitFor(`${runtime} TCP group health reports restored backend`, async () => {
+    await waitFor(`${runtime} TCP group health reports restored backend`, () => {
       return countOccurrences(handle.stdout, tcpGroupSuccessMarker) > tcpGroupSuccessCount;
     });
     await waitFor(`${runtime} TCP group health restores backend`, async () => {
@@ -1292,7 +1321,7 @@ async function runRuntime(
     const rawFailedMarker = 'Proxy "raw_http" health check failed';
     const rawFailedCount = countOccurrences(handle.stderr, rawFailedMarker);
     await controls.stopRawBackend();
-    await waitFor(`${runtime} RawHTTP health reports failed backend`, async () => {
+    await waitFor(`${runtime} RawHTTP health reports failed backend`, () => {
       return countOccurrences(handle.stderr, rawFailedMarker) > rawFailedCount;
     });
     await waitFor(`${runtime} RawHTTP health removes failed backend`, async () => {
@@ -1303,7 +1332,7 @@ async function runRuntime(
     const rawSuccessMarker = 'Proxy "raw_http" health check success';
     const rawSuccessCount = countOccurrences(handle.stdout, rawSuccessMarker);
     controls.startRawBackend();
-    await waitFor(`${runtime} RawHTTP health reports restored backend`, async () => {
+    await waitFor(`${runtime} RawHTTP health reports restored backend`, () => {
       return countOccurrences(handle.stdout, rawSuccessMarker) > rawSuccessCount;
     });
     await waitFor(`${runtime} RawHTTP health restores backend`, async () => {
@@ -1402,7 +1431,7 @@ async function runScenario(
       'log.to = "console"',
       'log.level = "trace"',
       "log.disablePrintColor = true",
-      "transport.tcpMux = false",
+      "transport.tcpMux = true",
       scenario === "tls" ? "transport.tls.force = true" : "",
       'auth.method = "token"',
       'auth.token = "test-token"',
@@ -1425,11 +1454,11 @@ export default {
     connection: {
         tls: ${scenario === "tls" ? "true" : "false"},
         retries: 0,
-        pool: { min: 0, max: 32 },
+        pool: { min: 1, max: 32 },
         heartbeat: 2,
         heartbeatTimeout: 8,
     },
-    transport: { wireProtocol: '${wireProtocol}' },
+    transport: { wireProtocol: '${wireProtocol}', tcpMux: true },
     webui: { enabled: false },
     proxies: {
         tcp_echo: new TCP(

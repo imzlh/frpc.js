@@ -36,20 +36,28 @@ export class WebUI {
 
     start(): void {
         const webuiCfg = webuiOptions(this.cfg);
-        if (!webuiCfg.enabled) return;
+        if (!webuiCfg.enabled || this.server) return;
 
         const host = webuiCfg.host;
         const port = webuiCfg.port;
 
-        try {
-            this.server = createServer((socket) => this.#handleClient(socket));
-            this.server.listen(port, host, () => {
-                this.running = true;
-                console.log(`[webui] Dashboard at http://${host}:${port}/`);
-            });
-        } catch (e) {
-            console.error('[webui] Failed to start:', (e as Error).message);
-        }
+        const server = createServer((socket) => this.#handleClient(socket));
+        this.server = server;
+        server.on('error', (error) => {
+            if (this.server !== server) return;
+            this.running = false;
+            this.server = null;
+            try { server.close(); } catch { /* not listening */ }
+            console.error('[webui] Failed:', error.message);
+        });
+        server.listen(port, host, () => {
+            if (this.server !== server) {
+                server.close();
+                return;
+            }
+            this.running = true;
+            console.log(`[webui] Dashboard at http://${host}:${port}/`);
+        });
     }
 
     stop(): void {

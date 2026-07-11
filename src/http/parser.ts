@@ -56,9 +56,7 @@ export async function* serveHttp(
       url: req.url,
       headers: req.headers,
       body: req.body,
-      respond: async (res: HttpResponse) => {
-        return writeResponse(socket, res, { close: req.closeAfterResponse });
-      },
+      respond: (res: HttpResponse) => writeResponse(socket, res, { close: req.closeAfterResponse }),
     };
   }
 }
@@ -267,7 +265,7 @@ class SocketReader {
   }
 }
 
-export async function writeResponse(
+export function writeResponse(
   socket: NetSocket,
   res: HttpResponse,
   opts: { close?: boolean } = {},

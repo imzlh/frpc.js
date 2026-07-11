@@ -89,11 +89,11 @@ class OIDCAuth implements ClientAuth {
         return msg;
     }
 
-    private async accessToken(): Promise<string> {
-        if (this.cfg.tokenSource) return this.cfg.tokenSource();
+    private accessToken(): Promise<string> {
+        if (this.cfg.tokenSource) return Promise.resolve(this.cfg.tokenSource());
 
         const now = Date.now();
-        if (this.cachedToken && now < this.cachedUntil) return this.cachedToken;
+        if (this.cachedToken && now < this.cachedUntil) return Promise.resolve(this.cachedToken);
         if (!this.pending) {
             this.pending = this.fetchToken().finally(() => {
                 this.pending = undefined;
